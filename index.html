@@ -93,11 +93,9 @@
 
     const INITIAL_AIRLINE_RULES = {
       'AA': { name: 'American Airlines', receptores: 4, maleteros: 3 },
-      'AMERICAN': { name: 'American Airlines', receptores: 4, maleteros: 3 },
       'COPA': { name: 'Copa Airlines', receptores: 2, maleteros: 3 },
       'AEROMEXICO': { name: 'Aeroméxico', receptores: 2, maleteros: 3 },
       'JETBLU': { name: 'JetBlue', receptores: 2, maleteros: 3 },
-      'JETBLUE': { name: 'JetBlue', receptores: 2, maleteros: 3 },
       'ALASKA': { name: 'Alaska Airlines', receptores: 2, maleteros: 3 },
       'AIR CANADA': { name: 'Air Canada', receptores: 2, maleteros: 3 },
       'ARAJET': { name: 'Arajet', receptores: 2, maleteros: 3 },
@@ -107,47 +105,40 @@
     // SECCIÓN 3: CONTROLADOR REACTIVO PRINCIPAL DE ALPINE.JS
     function appState() {
       return {
-        currentTab: 'dashboard',
+        currentTab: 'inicio', // Cambiado a inicio
         selectedDay: 12,
         selectedVersion: 'Mayo 2026 - Versión 1',
         generationProgress: null,
         scheduleGenerated: false,
-        simActive: false,
-        simStaffReduction: 0,
-        simEtdDelay: 0,
         csvText: '',
         csvStatus: '',
         flights: [...MAYO_FLIGHTS],
         staff: [],
         
-        // Reglas de negocio
+        // Nuevas variables para filtros y modales
+        flightFilter: '',
+        staffFilter: '',
+        editingFlight: null,
+        editingStaff: null,
+        disableModalOpen: false,
+        disableReason: '',
+        selectedStaffToDisable: null,
+        
         globalRules: {
-          rampaPorVuelo: 7,
-          reservaDiaria: 4,
           receptoresAntes: 3,
           maleterosAfuera: 2,
           maleterosAdentro: 1,
-          jornadaOperativos: 10,
-          jornadaSupervisores: 12,
-          comidaCorrido: 45,
-          bloqueMinimoPartido: 2,
-          descansosSemanales: 2,
-          evitarTurnoPartido: false,
-          rotacionJusta: true
         },
 
         airlineRules: { ...INITIAL_AIRLINE_RULES },
 
-        // Elementos del menú
         menuItems: [
-          { id: 'dashboard', label: 'Dashboard', icon: '<rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect>' },
+          { id: 'inicio', label: 'Inicio', icon: '<rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect>' },
           { id: 'itinerarios', label: 'Itinerarios / Vuelos', icon: '<path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"></path>' },
           { id: 'personal', label: 'Base de Personal', icon: '<path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"></path>' },
           { id: 'reglas', label: 'Reglas y Aerolíneas', icon: '<line x1="4" y1="21" x2="4" y2="14"></line><line x1="4" y1="10" x2="4" y2="3"></line><line x1="12" y1="21" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="3"></line><line x1="20" y1="21" x2="20" y2="16"></line><line x1="20" y1="12" x2="20" y2="3"></line>' },
-          { id: 'calendario', label: 'Vista de Roster', icon: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>' },
-          { id: 'simulacion', label: 'Simulación / Escenarios', icon: '<rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect><line x1="8" y1="21" x2="16" y2="21"></line><line x1="12" y1="17" x2="12" y2="21"></line>' }
+          { id: 'generar_turnos', label: 'Generar Turnos', icon: '<rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>' }
         ],
-
         // Inicializador
         init() {
           this.buildStaff();
@@ -287,6 +278,66 @@
           } catch (err) {
             this.csvStatus = 'Error al parsear el archivo CSV.';
           }
+        },
+
+        // LÓGICA DE VUELOS
+        addNewFlight() { this.editingFlight = { id: 'new', airline: 'AA', flightNo: '', type: 'TURN', eta: '12:00', etd: '13:00', days: [1], active: true }; },
+        editFlight(flight) { this.editingFlight = JSON.parse(JSON.stringify(flight)); },
+        saveFlight() { 
+          if(this.editingFlight.id === 'new') {
+             this.editingFlight.id = 'F' + Date.now();
+             this.flights.unshift(this.editingFlight);
+          } else {
+             const idx = this.flights.findIndex(f => f.id === this.editingFlight.id);
+             if(idx > -1) this.flights[idx] = this.editingFlight;
+          }
+          this.editingFlight = null;
+        },
+        deleteFlight(id) { this.flights = this.flights.filter(f => f.id !== id); },
+
+        // LÓGICA DE PERSONAL
+        addNewStaff() { this.editingStaff = { id: 'new', name: '', role: 'Operativo', skills: ['Rampa', 'Maletas', 'Recepción'], active: true, disableReason: '' }; },
+        editStaff(emp) { this.editingStaff = JSON.parse(JSON.stringify(emp)); },
+        saveStaff() {
+           if(this.editingStaff.id === 'new') {
+             this.editingStaff.id = 'EMP-NEW-' + Date.now();
+             this.staff.unshift(this.editingStaff);
+           } else {
+             const idx = this.staff.findIndex(s => s.id === this.editingStaff.id);
+             if(idx > -1) this.staff[idx] = this.editingStaff;
+           }
+           this.editingStaff = null;
+        },
+        deleteStaff(id) { this.staff = this.staff.filter(s => s.id !== id); },
+        
+        openDisableModal(emp) {
+            this.selectedStaffToDisable = emp;
+            this.disableReason = emp.disableReason || '';
+            this.disableModalOpen = true;
+        },
+        confirmDisable() {
+            const idx = this.staff.findIndex(s => s.id === this.selectedStaffToDisable.id);
+            if(idx > -1) {
+               this.staff[idx].active = false;
+               this.staff[idx].disableReason = this.disableReason;
+            }
+            this.disableModalOpen = false;
+        },
+        enableStaff(emp) {
+            const idx = this.staff.findIndex(s => s.id === emp.id);
+            if(idx > -1) {
+               this.staff[idx].active = true;
+               this.staff[idx].disableReason = '';
+            }
+        },
+        
+        getFilteredFlights() {
+           if(!this.flightFilter) return this.flights;
+           return this.flights.filter(f => f.airline === this.flightFilter);
+        },
+        getFilteredStaffForRoster() {
+           if(!this.staffFilter) return this.staff;
+           return this.staff.filter(s => s.name.toLowerCase().includes(this.staffFilter.toLowerCase()));
         }
       }
     }
@@ -390,145 +441,52 @@
       </header>
 
       <!-- CONTENIDO DE TABS -->
-      <div class="flex-1 overflow-y-auto p-8">
+      <div class="flex-1 overflow-y-auto p-8 relative">
         
-        <!-- ==========================================
-            DASHBOARD TAB
-            ========================================== -->
-        <div x-show="currentTab === 'dashboard'" class="space-y-6">
-          <div class="bg-gradient-to-r from-indigo-900/40 via-indigo-950/20 to-slate-950/50 p-6 rounded-2xl border border-indigo-500/20 flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
-            <div>
-              <h3 class="text-2xl font-bold text-white mb-1">Planificador General Real</h3>
-              <p class="text-sm text-slate-400 max-w-xl">
-                Operación basada en el itinerario de Mayo 2026 con tu plantilla real cargada de 100 personas.
-              </p>
-            </div>
-            <div class="flex flex-wrap gap-2">
-              <button 
-                @click="generateTurnos()"
-                class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-3 rounded-xl font-bold transition shadow-lg shadow-indigo-600/20 flex items-center space-x-2"
-                :class="generationProgress !== null && 'animate-pulse'"
-              >
-                <span x-text="scheduleGenerated ? '🔄 Regenerar Turnos' : '🚀 Generar Turnos Reales'"></span>
-              </button>
-              <button 
-                x-show="scheduleGenerated"
-                @click="exportRoster()"
-                class="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-3 rounded-xl font-bold transition flex items-center space-x-2 shadow-lg shadow-emerald-600/10"
-              >
-                <span>📥 Descargar Turnos (CSV)</span>
-              </button>
-            </div>
+        <div x-show="currentTab === 'inicio'" class="space-y-6">
+          <div class="bg-gradient-to-r from-indigo-900/40 via-indigo-950/20 to-slate-950/50 p-8 rounded-2xl border border-indigo-500/20 text-center">
+            <h3 class="text-3xl font-black text-white mb-2">Bienvenido a AeroSch_</h3>
+            <p class="text-slate-400">Resumen operativo actual del mes cargado.</p>
           </div>
-
-          <!-- Barra de Progreso -->
-          <div x-show="generationProgress !== null" class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-3">
-            <div class="flex justify-between text-xs text-slate-400">
-              <span class="font-semibold text-indigo-400">Procesando Itinerario Real de Mayo...</span>
-              <span x-text="`${generationProgress}%`"></span>
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div class="bg-slate-950/60 p-6 rounded-xl border border-slate-800/80 text-center">
+              <span class="text-4xl block mb-2">✈️</span>
+              <span class="text-3xl font-black text-emerald-400 block" x-text="flights.length"></span>
+              <span class="text-xs text-slate-400 font-medium">Vuelos Totales en Base</span>
             </div>
-            <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden">
-              <div class="bg-indigo-600 h-full transition-all duration-300" :style="`width: ${generationProgress}%`"></div>
+            <div class="bg-slate-950/60 p-6 rounded-xl border border-slate-800/80 text-center">
+              <span class="text-4xl block mb-2">🏢</span>
+              <span class="text-3xl font-black text-indigo-400 block" x-text="Object.keys(airlineRules).length"></span>
+              <span class="text-xs text-slate-400 font-medium">Aerolíneas Operando</span>
             </div>
-          </div>
-
-          <!-- Matriz de Métricas -->
-          <div class="grid grid-cols-1 md:grid-cols-4 gap-5">
-            <div class="bg-slate-950/60 p-5 rounded-xl border border-slate-800/80">
-              <span class="text-xs font-semibold text-slate-400 block mb-1">Eficiencia de Cobertura</span>
-              <span class="text-2xl font-black text-emerald-400 block mb-0.5" x-text="scheduleGenerated ? `${coverageMetrics.percent}%` : 'N/D'"></span>
-              <span class="text-[10px] text-slate-500 font-medium">Minutos cubiertos hoy</span>
-            </div>
-            <div class="bg-slate-950/60 p-5 rounded-xl border border-slate-800/80">
-              <span class="text-xs font-semibold text-slate-400 block mb-1">Conflictos de Demanda</span>
-              <span class="text-2xl font-black text-rose-400 block mb-0.5" x-text="scheduleGenerated ? `${coverageMetrics.deficientHours} hrs` : 'N/D'"></span>
-              <span class="text-[10px] text-slate-500 font-medium">Brechas de sub-cobertura</span>
-            </div>
-            <div class="bg-slate-950/60 p-5 rounded-xl border border-slate-800/80">
-              <span class="text-xs font-semibold text-slate-400 block mb-1">Horas Ociosas Totales</span>
-              <span class="text-2xl font-black text-amber-400 block mb-0.5" x-text="scheduleGenerated ? `${coverageMetrics.hoursIdle} hrs` : 'N/D'"></span>
-              <span class="text-[10px] text-slate-500 font-medium">Personal asignado sin vuelos</span>
-            </div>
-            <div class="bg-slate-950/60 p-5 rounded-xl border border-slate-800/80">
-              <span class="text-xs font-semibold text-slate-400 block mb-1">Alertas de Cumplimiento</span>
-              <span class="text-2xl font-black text-rose-400 block mb-0.5" x-text="scheduleGenerated ? smartAlerts.length : '0'"></span>
-              <span class="text-[10px] text-slate-500 font-medium">Reglas de descanso / horas</span>
-            </div>
-          </div>
-
-          <!-- Dos Columnas -->
-          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div class="bg-slate-950/40 p-6 rounded-xl border border-slate-800/60 lg:col-span-2 space-y-4">
-              <h4 class="font-bold text-white text-sm">Alertas Inteligentes de Planificación</h4>
-              
-              <div x-show="!scheduleGenerated" class="py-12 flex flex-col items-center justify-center text-center space-y-2">
-                <span class="text-3xl">📝</span>
-                <p class="text-sm font-semibold text-slate-400">Sin datos que procesar</p>
-                <p class="text-xs text-slate-500">Haga clic en "Generar Turnos Reales" para iniciar el análisis.</p>
-              </div>
-
-              <div x-show="scheduleGenerated" class="space-y-3">
-                <template x-if="smartAlerts.length === 0">
-                  <div class="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-lg flex items-center space-x-3">
-                    <span class="text-emerald-400 text-lg">✓</span>
-                    <p class="text-xs text-emerald-300 font-medium">¡Todo Excelente! La jornada cumple con todos los requerimientos de la operación.</p>
-                  </div>
-                </template>
-                <template x-for="al in smartAlerts">
-                  <div class="p-3.5 rounded-lg border flex items-start space-x-3 text-xs font-medium bg-rose-500/10 border-rose-500/20 text-rose-300">
-                    <span class="text-sm">⚠️</span>
-                    <div x-text="al.message"></div>
-                  </div>
-                </template>
-              </div>
-            </div>
-
-            <!-- Resumen Configuración -->
-            <div class="bg-slate-950/40 p-6 rounded-xl border border-slate-800/60 space-y-4">
-              <h4 class="font-bold text-white text-sm">Resumen de Configuración</h4>
-              <div class="space-y-2.5 text-xs text-slate-400">
-                <div class="flex justify-between">
-                  <span>Agentes Operativos (Rampa)</span>
-                  <span class="font-semibold text-slate-200" x-text="staff.filter(s => s.role === 'Operativo').length"></span>
-                </div>
-                <div class="flex justify-between">
-                  <span>Encargados Activos</span>
-                  <span class="font-semibold text-slate-200" x-text="staff.filter(s => s.role === 'Encargado').length"></span>
-                </div>
-                <div class="flex justify-between">
-                  <span>Operadores</span>
-                  <span class="font-semibold text-slate-200" x-text="staff.filter(s => s.role === 'Operador').length"></span>
-                </div>
-                <div class="flex justify-between">
-                  <span>Supervisores</span>
-                  <span class="font-semibold text-slate-200" x-text="staff.filter(s => s.role === 'Supervisor').length"></span>
-                </div>
-              </div>
+            <div class="bg-slate-950/60 p-6 rounded-xl border border-slate-800/80 text-center">
+              <span class="text-4xl block mb-2">👤</span>
+              <span class="text-3xl font-black text-cyan-400 block" x-text="staff.filter(s => s.active).length"></span>
+              <span class="text-xs text-slate-400 font-medium">Personal Activo</span>
             </div>
           </div>
         </div>
 
-        <!-- ==========================================
-            ITINERARIOS TAB
-            ========================================== -->
         <div x-show="currentTab === 'itinerarios'" class="space-y-6">
-          <div class="flex justify-between items-center">
+          <div class="flex justify-between items-center bg-slate-950 p-4 rounded-xl border border-slate-800">
+            <div class="flex space-x-3 items-center">
+              <label class="text-xs text-slate-400 font-bold">Filtrar por Aerolínea:</label>
+              <select x-model="flightFilter" class="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500">
+                <option value="">Todas las aerolíneas</option>
+                <template x-for="key in Object.keys(airlineRules)" :key="key">
+                  <option :value="key" x-text="key"></option>
+                </template>
+              </select>
+            </div>
             <div class="flex space-x-2">
-              <label class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer transition shadow-lg">
-                📂 Subir Itinerario CSV Real
+              <button @click="addNewFlight()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">➕ Nuevo Vuelo Manual</button>
+              <label class="bg-slate-800 hover:bg-slate-700 text-white px-4 py-2 rounded-lg text-sm font-semibold cursor-pointer transition">
+                📂 Subir CSV Excel
                 <input type="file" accept=".csv" class="hidden" @change="importCSVFile($event)">
               </label>
             </div>
           </div>
 
-          <div class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-2">
-            <h4 class="font-bold text-sm text-white">Guía de Importación de Itinerarios Reales</h4>
-            <p class="text-xs text-slate-400">Sube cualquiera de tus archivos CSV mensuales directamente de Excel. El sistema identificará de forma precisa la matriz del mes.</p>
-          </div>
-
-          <div x-show="csvStatus" class="p-3 bg-indigo-500/10 border border-indigo-500/20 rounded-lg text-xs text-indigo-300 font-bold" x-text="csvStatus"></div>
-
-          <!-- Tabla de Vuelos -->
           <div class="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
             <table class="w-full text-left border-collapse">
               <thead>
@@ -537,27 +495,23 @@
                   <th class="p-4">Vuelo</th>
                   <th class="p-4">Tipo</th>
                   <th class="p-4 text-center">ETA</th>
-                  <th className="p-4 text-center">ETD</th>
-                  <th className="p-4">Operación</th>
-                  <th className="p-4 text-center">Estado</th>
+                  <th class="p-4 text-center">ETD</th>
+                  <th class="p-4">Días de Operación</th>
+                  <th class="p-4 text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-800 text-sm">
-                <template x-for="flight in flights" :key="flight.id">
+                <template x-for="flight in getFilteredFlights()" :key="flight.id">
                   <tr class="hover:bg-slate-900/50 transition">
-                    <td class="p-4 font-bold text-white flex items-center space-x-2">
-                      <span class="w-7 h-7 rounded bg-indigo-500/20 text-indigo-300 flex items-center justify-center text-[10px] font-black" x-text="flight.airline"></span>
-                      <span x-text="flight.airline === 'AA' ? 'American Airlines' : flight.airline"></span>
-                    </td>
+                    <td class="p-4 font-bold text-white" x-text="flight.airline"></td>
                     <td class="p-4 font-mono text-slate-300" x-text="flight.flightNo"></td>
-                    <td class="p-4">
-                      <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400" x-text="flight.type"></span>
-                    </td>
+                    <td class="p-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400" x-text="flight.type"></span></td>
                     <td class="p-4 text-center font-mono text-slate-300" x-text="flight.eta"></td>
                     <td class="p-4 text-center font-mono text-slate-300" x-text="flight.etd"></td>
-                    <td class="p-4 text-xs text-slate-400" x-text="flight.days.length === 31 ? 'Diario' : `${flight.days.length} días`"></td>
-                    <td class="p-4 text-center">
-                      <span class="w-2.5 h-2.5 rounded-full inline-block bg-emerald-400"></span>
+                    <td class="p-4 text-xs text-slate-400" x-text="flight.days.length === 31 ? 'Diario' : flight.days.join(', ')"></td>
+                    <td class="p-4 text-right space-x-2">
+                      <button @click="editFlight(flight)" class="text-indigo-400 hover:text-indigo-300 text-xs font-semibold">Editar</button>
+                      <button @click="deleteFlight(flight.id)" class="text-rose-400 hover:text-rose-300 text-xs font-semibold">Eliminar</button>
                     </td>
                   </tr>
                 </template>
@@ -566,39 +520,37 @@
           </div>
         </div>
 
-        <!-- ==========================================
-            PERSONAL TAB
-            ========================================== -->
         <div x-show="currentTab === 'personal'" class="space-y-6">
+          <div class="flex justify-between items-center">
+            <button @click="addNewStaff()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">➕ Registrar Empleado</button>
+          </div>
+
           <div class="bg-slate-950 rounded-xl border border-slate-800 overflow-hidden">
             <table class="w-full text-left border-collapse">
               <thead>
                 <tr class="bg-slate-900 border-b border-slate-800 text-xs font-bold text-slate-400">
-                  <th class="p-4">Código / Nombre</th>
-                  <th class="p-4">Rol Principal</th>
-                  <th class="p-4">Habilidades Autorizadas</th>
+                  <th class="p-4">Nombre Completo</th>
+                  <th class="p-4">Puesto / Rol</th>
                   <th class="p-4 text-center">Estado</th>
+                  <th class="p-4">Observaciones</th>
+                  <th class="p-4 text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody class="divide-y divide-slate-800 text-sm">
                 <template x-for="emp in staff" :key="emp.id">
-                  <tr class="hover:bg-slate-900/50 transition">
-                    <td class="p-4">
-                      <div class="font-semibold text-white" x-text="emp.name"></div>
-                      <div class="text-xs font-mono text-slate-500" x-text="emp.id"></div>
-                    </td>
-                    <td class="p-4">
-                      <span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-400" x-text="emp.role"></span>
-                    </td>
-                    <td class="p-4">
-                      <div class="flex flex-wrap gap-1">
-                        <template x-for="sk in emp.skills">
-                          <span class="bg-slate-800 text-slate-300 text-[10px] px-1.5 py-0.5 rounded" x-text="sk"></span>
-                        </template>
-                      </div>
-                    </td>
+                  <tr class="hover:bg-slate-900/50 transition" :class="!emp.active && 'opacity-50'">
+                    <td class="p-4 font-semibold text-white" x-text="emp.name"></td>
+                    <td class="p-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-indigo-500/15 text-indigo-400" x-text="emp.role"></span></td>
                     <td class="p-4 text-center">
-                      <span class="w-2.5 h-2.5 rounded-full inline-block bg-emerald-400"></span>
+                      <span x-show="emp.active" class="text-emerald-400 font-bold text-[10px] bg-emerald-500/10 px-2 py-1 rounded">Activo</span>
+                      <span x-show="!emp.active" class="text-rose-400 font-bold text-[10px] bg-rose-500/10 px-2 py-1 rounded">Inhabilitado</span>
+                    </td>
+                    <td class="p-4 text-xs text-slate-400 italic" x-text="emp.active ? '-' : `Motivo: ${emp.disableReason}`"></td>
+                    <td class="p-4 text-right space-x-3">
+                      <button @click="editStaff(emp)" class="text-indigo-400 hover:text-indigo-300 text-xs font-semibold">Editar</button>
+                      <button x-show="emp.active" @click="openDisableModal(emp)" class="text-amber-400 hover:text-amber-300 text-xs font-semibold">Inhabilitar</button>
+                      <button x-show="!emp.active" @click="enableStaff(emp)" class="text-emerald-400 hover:text-emerald-300 text-xs font-semibold">Habilitar</button>
+                      <button @click="deleteStaff(emp.id)" class="text-rose-400 hover:text-rose-300 text-xs font-semibold">Eliminar</button>
                     </td>
                   </tr>
                 </template>
@@ -607,133 +559,159 @@
           </div>
         </div>
 
-        <!-- ==========================================
-            REGLAS TAB
-            ========================================== -->
         <div x-show="currentTab === 'reglas'" class="space-y-6">
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <div class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-4">
-              <h4 class="font-bold text-white text-base">Reglas Globales de Planificación</h4>
-              <div class="grid grid-cols-2 gap-4 text-sm">
-                <div>
-                  <label class="block text-xs text-slate-400 mb-1">Rampa por vuelo</label>
-                  <input type="number" x-model.number="globalRules.rampaPorVuelo" class="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-white text-sm focus:ring-1 focus:ring-indigo-500">
-                </div>
-                <div>
-                  <label class="block text-xs text-slate-400 mb-1">Reserva diaria</label>
-                  <input type="number" x-model.number="globalRules.reservaDiaria" class="w-full bg-slate-900 border border-slate-800 rounded px-3 py-2 text-white text-sm focus:ring-1 focus:ring-indigo-500">
-                </div>
-              </div>
-            </div>
-
-            <!-- Reglas por Aerolínea -->
-            <div class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-4">
-              <h4 class="font-bold text-white text-base">Requisitos de Equipaje por Aerolínea</h4>
-              <div class="space-y-3">
+              <h4 class="font-bold text-white text-base">Requisitos de Personal por Aerolínea</h4>
+              <p class="text-xs text-slate-400">Modifica la cantidad de receptores y maleteros exigidos por cada empresa para sus vuelos.</p>
+              <div class="space-y-3 pt-2">
                 <template x-for="[key, value] in Object.entries(airlineRules)">
                   <div class="flex items-center justify-between border-b border-slate-900 pb-2.5">
                     <span class="text-sm font-semibold text-white" x-text="value.name"></span>
-                    <div class="flex space-x-2">
-                      <input type="number" x-model.number="value.receptores" class="w-16 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-center text-white">
-                      <input type="number" x-model.number="value.maleteros" class="w-16 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-center text-white">
+                    <div class="flex space-x-3">
+                      <div class="text-center">
+                        <span class="text-[9px] text-slate-500 uppercase font-bold block mb-1">Receptores</span>
+                        <input type="number" x-model.number="value.receptores" class="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-center text-white">
+                      </div>
+                      <div class="text-center">
+                        <span class="text-[9px] text-slate-500 uppercase font-bold block mb-1">Maleteros Totales</span>
+                        <input type="number" x-model.number="value.maleteros" class="w-14 bg-slate-900 border border-slate-700 rounded px-2 py-1 text-xs text-center text-white">
+                      </div>
                     </div>
                   </div>
                 </template>
               </div>
             </div>
+
+            <div class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-4 h-fit">
+              <h4 class="font-bold text-white text-base">Reglas Generales de Horarios</h4>
+              <div class="space-y-4 text-sm">
+                <div>
+                  <label class="block text-xs text-slate-400 mb-1 font-bold">Horas antes para presentar Recepción:</label>
+                  <input type="number" x-model.number="globalRules.receptoresAntes" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white text-sm">
+                </div>
+                <div class="grid grid-cols-2 gap-4">
+                  <div>
+                    <label class="block text-xs text-slate-400 mb-1 font-bold">Maleteros Afuera:</label>
+                    <input type="number" x-model.number="globalRules.maleterosAfuera" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white text-sm">
+                  </div>
+                  <div>
+                    <label class="block text-xs text-slate-400 mb-1 font-bold">Maleteros Adentro:</label>
+                    <input type="number" x-model.number="globalRules.maleterosAdentro" class="w-full bg-slate-900 border border-slate-700 rounded px-3 py-2 text-white text-sm">
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- ==========================================
-            CALENDARIO / ROSTER VISUAL TAB
-            ========================================== -->
-        <div x-show="currentTab === 'calendario'" class="space-y-6">
-          <div x-show="!scheduleGenerated" class="bg-slate-950 rounded-2xl p-12 text-center border border-slate-800 max-w-2xl mx-auto space-y-4 mt-8">
-            <span class="text-4xl">🗓️</span>
-            <h3 class="text-xl font-bold text-white">Roster de Personal Vacío</h3>
-            <p class="text-sm text-slate-400">Presiona el botón de abajo para calcular la distribución real de turnos.</p>
-            <button @click="generateTurnos()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-lg font-semibold transition">
-              🚀 Generar Turnos de Mayo
-            </button>
-          </div>
-
-          <div x-show="scheduleGenerated" class="space-y-6">
-            <!-- Leyenda y Descarga -->
-            <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-wrap gap-4 items-center justify-between text-xs">
-              <div class="flex flex-wrap gap-3">
-                <span class="flex items-center space-x-1.5 font-medium">
-                  <span class="w-3.5 h-3.5 rounded bg-indigo-505 bg-indigo-600 inline-block"></span>
-                  <span class="text-slate-300">Rampa</span>
-                </span>
-                <span class="flex items-center space-x-1.5 font-medium">
-                  <span class="w-3.5 h-3.5 rounded bg-purple-600 inline-block"></span>
-                  <span class="text-slate-300">Receptor</span>
-                </span>
-                <span class="flex items-center space-x-1.5 font-medium">
-                  <span class="w-3.5 h-3.5 rounded bg-amber-600 inline-block"></span>
-                  <span class="text-slate-300">Maletero</span>
-                </span>
-              </div>
-              <button @click="exportRoster()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2 rounded-lg font-bold transition">
-                📥 Descargar Turnos de Hoy (CSV)
+        <div x-show="currentTab === 'generar_turnos'" class="space-y-6">
+          <div class="bg-gradient-to-r from-indigo-900/40 to-slate-950/50 p-6 rounded-2xl border border-indigo-500/20 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div>
+              <h3 class="text-2xl font-bold text-white mb-1">Generador de Turnos</h3>
+              <p class="text-sm text-slate-400">Calcula y muestra la asignación final del personal.</p>
+            </div>
+            <div class="flex gap-2">
+              <button @click="generateTurnos()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-6 py-2.5 rounded-xl font-bold transition">
+                <span x-text="scheduleGenerated ? '🔄 Recalcular Turnos' : '🚀 Generar Turnos'"></span>
+              </button>
+              <button x-show="scheduleGenerated" @click="exportRoster()" class="bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-2.5 rounded-xl font-bold transition">
+                📥 Excel (CSV)
               </button>
             </div>
+          </div>
 
-            <!-- Tabla de Roster Detallado -->
-            <div class="bg-slate-950 rounded-xl border border-slate-800 p-6 space-y-4">
-              <h4 class="font-bold text-white text-base">Asignación Detallada de Turnos (Día <span x-text="selectedDay"></span>)</h4>
-              <div class="overflow-x-auto">
-                <table class="w-full text-left border-collapse">
-                  <thead>
-                    <tr class="bg-slate-900 border-b border-slate-800 text-xs font-bold text-slate-400">
-                      <th class="p-3">Código</th>
-                      <th class="p-3">Empleado</th>
-                      <th class="p-3">Rol</th>
-                      <th class="p-3">Estado</th>
-                      <th class="p-3">Bloques Asignados</th>
-                      <th class="p-3">Almuerzo</th>
+          <div x-show="generationProgress !== null" class="bg-slate-950 p-6 rounded-xl border border-slate-800">
+            <div class="w-full bg-slate-900 rounded-full h-2 overflow-hidden">
+              <div class="bg-indigo-600 h-full transition-all duration-300" :style="`width: ${generationProgress}%`"></div>
+            </div>
+          </div>
+
+          <div x-show="scheduleGenerated" class="bg-slate-950 rounded-xl border border-slate-800 p-6 space-y-4">
+            <div class="flex justify-between items-center">
+              <h4 class="font-bold text-white text-base">Asignación Detallada</h4>
+              <input type="text" x-model="staffFilter" placeholder="🔍 Filtrar por trabajador..." class="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500 w-64">
+            </div>
+
+            <div class="overflow-x-auto">
+              <table class="w-full text-left border-collapse">
+                <thead>
+                  <tr class="bg-slate-900 border-b border-slate-800 text-xs font-bold text-slate-400">
+                    <th class="p-3">Empleado</th>
+                    <th class="p-3">Puesto</th>
+                    <th class="p-3">Estado del Turno</th>
+                    <th class="p-3">Horario Asignado (Bloques)</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-900 text-xs">
+                  <template x-for="emp in getFilteredStaffForRoster()" :key="emp.id">
+                    <tr class="hover:bg-slate-900/40 transition">
+                      <td class="p-3 font-semibold text-white" x-text="emp.name"></td>
+                      <td class="p-3 text-slate-400" x-text="emp.role"></td>
+                      <td class="p-3">
+                        <span class="px-2 py-0.5 rounded text-[10px] font-bold" :class="getRosterStatus(emp.id).isDescanso ? 'bg-slate-800 text-slate-500' : 'bg-emerald-500/10 text-emerald-400'" x-text="getRosterStatus(emp.id).isDescanso ? '💤 Libre' : '🟢 Trabajando'"></span>
+                      </td>
+                      <td class="p-3 text-slate-300 font-mono" x-text="getRosterStatus(emp.id).blocks"></td>
                     </tr>
-                  </thead>
-                  <tbody class="divide-y divide-slate-900 text-xs">
-                    <template x-for="emp in staff" :key="emp.id">
-                      <tr class="hover:bg-slate-900/40 transition">
-                        <td class="p-3 font-mono text-slate-500" x-text="emp.id"></td>
-                        <td class="p-3 font-semibold text-white" x-text="emp.name"></td>
-                        <td class="p-3 text-slate-400" x-text="emp.role"></td>
-                        <td class="p-3">
-                          <span 
-                            class="px-2 py-0.5 rounded text-[10px] font-bold"
-                            :class="getRosterStatus(emp.id).isDescanso ? 'bg-slate-800 text-slate-500' : 'bg-emerald-500/10 text-emerald-400'"
-                            x-text="getRosterStatus(emp.id).isDescanso ? '💤 Libre' : '🟢 Activo'"
-                          ></span>
-                        </td>
-                        <td class="p-3 text-slate-300 font-mono">
-                          <span x-text="getRosterStatus(emp.id).blocks"></span>
-                        </td>
-                        <td class="p-3 text-slate-400 font-mono">
-                          <span x-text="getRosterStatus(emp.id).meal"></span>
-                        </td>
-                      </tr>
-                    </template>
-                  </tbody>
-                </table>
-              </div>
+                  </template>
+                  <tr x-show="getFilteredStaffForRoster().length === 0">
+                    <td colspan="4" class="p-4 text-center text-slate-500 italic">No se encontró al trabajador.</td>
+                  </tr>
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
 
-        <!-- ==========================================
-            SIMULACIÓN TAB
-            ========================================== -->
-        <div x-show="currentTab === 'simulacion'" class="space-y-6">
-          <div class="bg-slate-950 p-6 rounded-xl border border-slate-800 space-y-4 max-w-3xl">
-            <h4 class="font-bold text-lg text-white">Modelador de Escenarios "What-If"</h4>
-            <p class="text-xs text-slate-400">Modifica parámetros críticos para ver cómo cambia la eficiencia operativa del aeropuerto.</p>
-            <div class="flex items-center justify-between border-b border-slate-900 pb-4">
-              <span class="text-sm font-semibold">Activar Modo Simulación</span>
-              <button @click="simActive = !simActive" class="px-4 py-2 rounded-lg text-xs font-bold transition bg-indigo-600 hover:bg-indigo-500">
-                <span x-text="simActive ? '🔴 Desactivar' : '🟢 Activar Simulación'"></span>
-              </button>
+        <div x-show="editingFlight" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50" style="display: none;">
+          <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 w-full max-w-md" @click.away="editingFlight = null">
+            <h4 class="font-bold text-white text-lg mb-4" x-text="editingFlight?.id === 'new' ? 'Nuevo Vuelo' : 'Editar Vuelo'"></h4>
+            <div class="space-y-3" x-if="editingFlight">
+              <div><label class="text-xs text-slate-400 block mb-1">Aerolínea</label><input type="text" x-model="editingFlight.airline" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"></div>
+              <div><label class="text-xs text-slate-400 block mb-1">Nº Vuelo</label><input type="text" x-model="editingFlight.flightNo" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"></div>
+              <div class="grid grid-cols-2 gap-3">
+                <div><label class="text-xs text-slate-400 block mb-1">ETA</label><input type="text" x-model="editingFlight.eta" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"></div>
+                <div><label class="text-xs text-slate-400 block mb-1">ETD</label><input type="text" x-model="editingFlight.etd" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"></div>
+              </div>
+              <div><label class="text-xs text-slate-400 block mb-1">Días (separados por coma)</label><input type="text" :value="editingFlight.days.join(', ')" @input="editingFlight.days = $event.target.value.split(',').map(n => parseInt(n.trim())).filter(n => !isNaN(n))" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"></div>
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+              <button @click="editingFlight = null" class="px-4 py-2 bg-slate-800 rounded-lg text-sm text-slate-300">Cancelar</button>
+              <button @click="saveFlight()" class="px-4 py-2 bg-indigo-600 rounded-lg text-sm text-white font-bold">Guardar</button>
+            </div>
+          </div>
+        </div>
+
+        <div x-show="editingStaff" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50" style="display: none;">
+          <div class="bg-slate-950 p-6 rounded-2xl border border-slate-800 w-full max-w-md" @click.away="editingStaff = null">
+            <h4 class="font-bold text-white text-lg mb-4" x-text="editingStaff?.id === 'new' ? 'Registrar Personal' : 'Editar Personal'"></h4>
+            <div class="space-y-3" x-if="editingStaff">
+              <div><label class="text-xs text-slate-400 block mb-1">Nombre Completo</label><input type="text" x-model="editingStaff.name" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm"></div>
+              <div>
+                <label class="text-xs text-slate-400 block mb-1">Puesto</label>
+                <select x-model="editingStaff.role" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm">
+                  <option value="Operativo">Operativo (Rampa)</option>
+                  <option value="Operador">Operador</option>
+                  <option value="Encargado">Encargado</option>
+                  <option value="Supervisor">Supervisor</option>
+                </select>
+              </div>
+            </div>
+            <div class="flex justify-end gap-2 mt-6">
+              <button @click="editingStaff = null" class="px-4 py-2 bg-slate-800 rounded-lg text-sm text-slate-300">Cancelar</button>
+              <button @click="saveStaff()" class="px-4 py-2 bg-indigo-600 rounded-lg text-sm text-white font-bold">Guardar</button>
+            </div>
+          </div>
+        </div>
+
+        <div x-show="disableModalOpen" class="fixed inset-0 bg-black/80 flex items-center justify-center p-4 z-50" style="display: none;">
+          <div class="bg-slate-950 p-6 rounded-2xl border border-rose-500/50 w-full max-w-sm" @click.away="disableModalOpen = false">
+            <h4 class="font-bold text-rose-400 text-lg mb-2">Inhabilitar Empleado</h4>
+            <p class="text-xs text-slate-400 mb-4">Ingresa el motivo por el cual <span class="text-white font-bold" x-text="selectedStaffToDisable?.name"></span> será suspendido de los turnos.</p>
+            <textarea x-model="disableReason" class="w-full bg-slate-900 border border-slate-700 rounded p-2 text-white text-sm mb-4" rows="3" placeholder="Ej: Suspensión por IGSS, vacaciones, despido..."></textarea>
+            <div class="flex justify-end gap-2">
+              <button @click="disableModalOpen = false" class="px-4 py-2 bg-slate-800 rounded-lg text-sm text-slate-300">Cancelar</button>
+              <button @click="confirmDisable()" class="px-4 py-2 bg-rose-600 rounded-lg text-sm text-white font-bold">Inhabilitar</button>
             </div>
           </div>
         </div>

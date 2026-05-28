@@ -117,8 +117,11 @@
         staff: [],
         
         // Nuevas variables para filtros y modales
+        mobileMenuOpen: false, // Control del menú en celulares
         flightFilter: '',
+        flightDayFilter: '', // Nuevo filtro de día para vuelos
         staffFilter: '',
+        rosterViewMode: 'day', // 'day' o 'month' para alternar vistas
         editingFlight: null,
         editingStaff: null,
         disableModalOpen: false,
@@ -234,25 +237,42 @@
           return { isDescanso: false, blocks: '07:00 - 17:00 (Rampa)', meal: '12:00 - 12:45' };
         },
 
-        // Exportador a CSV real
+        // Exportador a Excel real (.xlsx)
         exportRoster() {
-          let csv = 'ID Empleado,Nombre,Rol,Estado,Bloques de Turno,Almuerzo\n';
-          this.staff.forEach(emp => {
-            const status = this.getRosterStatus(emp.id);
-            const estado = status.isDescanso ? 'Descanso' : 'Trabajando';
-            csv += `"${emp.id}","${emp.name}","${emp.role}","${estado}","${status.blocks}","${status.meal}"\n`;
-          });
+          const data = [];
+          const staffToExport = this.getFilteredStaffForRoster();
+          
+          if(this.rosterViewMode === 'day') {
+              staffToExport.forEach(emp => {
+                const status = this.getRosterStatus(emp.id);
+                data.push({
+                  "ID Empleado": emp.id,
+                  "Nombre": emp.name,
+                  "Rol": emp.role,
+                  "Estado": status.isDescanso ? 'Descanso' : 'Trabajando',
+                  "Turno Asignado": status.blocks,
+                  "Almuerzo": status.meal
+                });
+              });
+          } else {
+              // Vista mensual Excel
+              staffToExport.forEach(emp => {
+                  let row = { "ID": emp.id, "Nombre": emp.name, "Rol": emp.role };
+                  for(let d=1; d<=31; d++) {
+                      // Plantilla provisional
+                      const isDescanso = (this.staff.indexOf(emp) + d) % 7 === 0;
+                      row[`Día ${d}`] = isDescanso ? 'Descanso' : 'Turno (10h)';
+                  }
+                  data.push(row);
+              });
+          }
 
-          const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = url;
-          link.setAttribute('download', `Turnos_Mayo_Dia_${this.selectedDay}.csv`);
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
+          const ws = XLSX.utils.json_to_sheet(data);
+          const wb = XLSX.utils.book_new();
+          const sheetName = this.rosterViewMode === 'day' ? `Turnos Día ${this.selectedDay}` : 'Turnos Mes Completo';
+          XLSX.utils.book_append_sheet(wb, ws, sheetName);
+          XLSX.writeFile(wb, `Turnos_Mayo_${this.rosterViewMode === 'day' ? 'Dia_'+this.selectedDay : 'Mensual'}.xlsx`);
         },
-
       // Lector inteligente de Excel (.xlsx / .csv)
         importExcelFile(event) {
           const file = event.target.files[0];
@@ -414,12 +434,14 @@
         },
         
         getFilteredFlights() {
-           if(!this.flightFilter) return this.flights;
-           return this.flights.filter(f => f.airline === this.flightFilter);
+           let res = this.flights;
+           if(this.flightFilter) res = res.filter(f => f.airline === this.flightFilter);
+           if(this.flightDayFilter) res = res.filter(f => f.days.includes(parseInt(this.flightDayFilter)));
+           return res;
         },
         getFilteredStaffForRoster() {
            if(!this.staffFilter) return this.staff;
-           return this.staff.filter(s => s.name.toLowerCase().includes(this.staffFilter.toLowerCase()));
+           return this.staff.filter(s => s.name.toLowerCase().includes(this.staffFilter.toLowerCase()) || s.id.toLowerCase().includes(this.staffFilter.toLowerCase()));
         }
       }
     }
@@ -433,14 +455,11 @@
 
   <div class="flex h-full overflow-hidden">
     
-    <!-- ==========================================
-        SIIDBAR / NAVEGACIÓN IZQUIERDA
-        ========================================== -->
-    <aside class="w-64 bg-slate-950 border-r border-slate-800 flex flex-col justify-between">
+    <div x-show="mobileMenuOpen" @click="mobileMenuOpen = false" class="fixed inset-0 bg-black/80 z-40 md:hidden" style="display: none;"></div>
+
+    <aside :class="mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'" class="fixed md:relative inset-y-0 left-0 z-50 w-64 bg-slate-950 border-r border-slate-800 flex flex-col justify-between transition-transform duration-300 md:translate-x-0 h-full">
       <div>
-        <!-- Logo -->
-        <div class="p-6 border-b border-slate-800 flex items-center space-x-3">
-          <div class="p-2 bg-indigo-600 rounded-lg text-white">
+        <div class="p-6 border-b border-slate-800 flex items-center space-x-3">          <div class="p-2 bg-indigo-600 rounded-lg text-white">
             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
             </svg>
@@ -496,10 +515,14 @@
     <main class="flex-1 flex flex-col min-w-0 overflow-hidden bg-slate-900">
       
       <!-- CABECERA -->
-      <header class="h-16 border-b border-slate-800 px-8 flex items-center justify-between bg-slate-950/20">
-        <div class="flex items-center space-x-6">
-          <h2 class="text-xl font-semibold tracking-tight text-white capitalize" x-text="currentTab === 'reglas' ? 'Reglas de Asignación' : currentTab"></h2>
-          <div class="h-4 w-px bg-slate-800"></div>
+      <header class="h-16 border-b border-slate-800 px-4 md:px-8 flex items-center justify-between bg-slate-950/20 w-full">
+        <div class="flex items-center space-x-3 md:space-x-6">
+          <button @click="mobileMenuOpen = true" class="md:hidden p-1 text-slate-400 hover:text-white">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+          </button>
+          
+          <h2 class="text-lg md:text-xl font-semibold tracking-tight text-white capitalize hidden sm:block" x-text="currentTab === 'reglas' ? 'Reglas de Asignación' : currentTab"></h2>
+          <div class="h-4 w-px bg-slate-800 hidden sm:block"></div>
           
           <!-- Selector de Día -->
           <div class="flex items-center space-x-2">
@@ -550,15 +573,26 @@
         </div>
 
         <div x-show="currentTab === 'itinerarios'" class="space-y-6">
-          <div class="flex justify-between items-center bg-slate-950 p-4 rounded-xl border border-slate-800">
-            <div class="flex space-x-3 items-center">
-              <label class="text-xs text-slate-400 font-bold">Filtrar por Aerolínea:</label>
-              <select x-model="flightFilter" class="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500">
-                <option value="">Todas las aerolíneas</option>
-                <template x-for="key in Object.keys(airlineRules)" :key="key">
-                  <option :value="key" x-text="key"></option>
-                </template>
-              </select>
+          <div class="flex flex-wrap gap-4 justify-between items-center bg-slate-950 p-4 rounded-xl border border-slate-800">
+            <div class="flex space-x-4 items-center">
+              <div>
+                <label class="text-xs text-slate-400 font-bold block mb-1">Filtrar Aerolínea:</label>
+                <select x-model="flightFilter" class="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500 w-40">
+                  <option value="">Todas</option>
+                  <template x-for="key in Object.keys(airlineRules)" :key="key">
+                    <option :value="key" x-text="key"></option>
+                  </template>
+                </select>
+              </div>
+              <div>
+                <label class="text-xs text-slate-400 font-bold block mb-1">Calendario de Vuelos (Día):</label>
+                <select x-model="flightDayFilter" class="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500 w-36">
+                  <option value="">Todo el mes</option>
+                  <template x-for="d in 31" :key="d">
+                    <option :value="d" x-text="`Día ${d}`"></option>
+                  </template>
+                </select>
+              </div>
             </div>
             <div class="flex space-x-2">
               <button @click="addNewFlight()" class="bg-indigo-600 hover:bg-indigo-500 text-white px-4 py-2 rounded-lg text-sm font-semibold transition">➕ Nuevo Vuelo Manual</button>
@@ -590,7 +624,18 @@
                     <td class="p-4"><span class="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400" x-text="flight.type"></span></td>
                     <td class="p-4 text-center font-mono text-slate-300" x-text="flight.eta"></td>
                     <td class="p-4 text-center font-mono text-slate-300" x-text="flight.etd"></td>
-                    <td class="p-4 text-xs text-slate-400" x-text="flight.days.length === 31 ? 'Diario' : flight.days.join(', ')"></td>
+                    <td class="p-4 text-xs text-slate-400 max-w-xs">
+                      <template x-if="flight.days.length === 31">
+                         <span class="bg-indigo-500/20 text-indigo-300 font-bold px-2 py-1 rounded">Operación Diaria</span>
+                      </template>
+                      <template x-if="flight.days.length !== 31">
+                         <div class="flex flex-wrap gap-1">
+                           <template x-for="d in flight.days">
+                             <span class="bg-slate-800 border border-slate-700 text-slate-300 rounded-md px-1.5 py-0.5 inline-block text-[10px]" x-text="d"></span>
+                           </template>
+                         </div>
+                      </template>
+                    </td>
                     <td class="p-4 text-right space-x-2">
                       <button @click="editFlight(flight)" class="text-indigo-400 hover:text-indigo-300 text-xs font-semibold">Editar</button>
                       <button @click="deleteFlight(flight.id)" class="text-rose-400 hover:text-rose-300 text-xs font-semibold">Eliminar</button>
@@ -710,19 +755,22 @@
           </div>
 
           <div x-show="scheduleGenerated" class="bg-slate-950 rounded-xl border border-slate-800 p-6 space-y-4">
-            <div class="flex justify-between items-center">
-              <h4 class="font-bold text-white text-base">Asignación Detallada</h4>
-              <input type="text" x-model="staffFilter" placeholder="🔍 Filtrar por trabajador..." class="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500 w-64">
+            <div class="flex flex-col md:flex-row justify-between items-center gap-4">
+              <div class="flex space-x-2 bg-slate-900 p-1 rounded-lg border border-slate-800">
+                <button @click="rosterViewMode = 'day'" :class="rosterViewMode === 'day' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'" class="px-4 py-1.5 rounded-md text-xs font-bold transition">Día Seleccionado</button>
+                <button @click="rosterViewMode = 'month'" :class="rosterViewMode === 'month' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'" class="px-4 py-1.5 rounded-md text-xs font-bold transition">Mes Completo</button>
+              </div>
+              <input type="text" x-model="staffFilter" placeholder="🔍 Buscar por nombre o código..." class="bg-slate-900 border border-slate-700 text-slate-200 rounded px-3 py-1.5 text-sm focus:ring-1 focus:ring-indigo-500 w-full md:w-64">
             </div>
 
             <div class="overflow-x-auto">
-              <table class="w-full text-left border-collapse">
+              <table x-show="rosterViewMode === 'day'" class="w-full text-left border-collapse">
                 <thead>
                   <tr class="bg-slate-900 border-b border-slate-800 text-xs font-bold text-slate-400">
                     <th class="p-3">Empleado</th>
                     <th class="p-3">Puesto</th>
-                    <th class="p-3">Estado del Turno</th>
-                    <th class="p-3">Horario Asignado (Bloques)</th>
+                    <th class="p-3">Estado (Día <span x-text="selectedDay"></span>)</th>
+                    <th class="p-3">Horario Asignado</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-900 text-xs">
@@ -739,6 +787,29 @@
                   <tr x-show="getFilteredStaffForRoster().length === 0">
                     <td colspan="4" class="p-4 text-center text-slate-500 italic">No se encontró al trabajador.</td>
                   </tr>
+                </tbody>
+              </table>
+
+              <table x-show="rosterViewMode === 'month'" class="w-full text-left border-collapse block overflow-x-auto max-w-full">
+                <thead>
+                  <tr class="bg-slate-900 border-b border-slate-800 text-[10px] font-bold text-slate-400">
+                    <th class="p-2 min-w-[150px] sticky left-0 bg-slate-900 z-10 border-r border-slate-800">Empleado</th>
+                    <template x-for="d in 31">
+                       <th class="p-2 text-center min-w-[35px] border-l border-slate-800" x-text="d"></th>
+                    </template>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-slate-900 text-[10px]">
+                  <template x-for="emp in getFilteredStaffForRoster()" :key="emp.id">
+                    <tr class="hover:bg-slate-900/40 transition">
+                      <td class="p-2 font-semibold text-white sticky left-0 bg-slate-950 z-10 border-r border-slate-800 truncate" x-text="emp.name"></td>
+                      <template x-for="d in 31">
+                        <td class="p-1 border-l border-slate-800 text-center">
+                           <span class="w-full block py-1 rounded font-bold" :class="(staff.indexOf(emp) + d) % 7 === 0 ? 'bg-slate-800 text-slate-500' : 'bg-indigo-500/20 text-indigo-300'" x-text="(staff.indexOf(emp) + d) % 7 === 0 ? 'L' : 'T'"></span>
+                        </td>
+                      </template>
+                    </tr>
+                  </template>
                 </tbody>
               </table>
             </div>

@@ -262,46 +262,156 @@
         },
 
         buildRealRoster() {
-          this.currentRoster = {};
-          let encCount = 0, opeCount = 0, rampCount = 0;
-          
-          this.staff.forEach((emp, index) => {
-            const isDescanso = (index + this.selectedDay) % 7 === 0 || (index + this.selectedDay) % 7 === 1;
-            
-            if(isDescanso || !emp.active) {
-              this.currentRoster[emp.id] = { isDescanso: true, blocks: '-', meal: '-' };
-              return;
-            }
+  this.currentRoster = {};
 
-            if(emp.role === 'Supervisor') {
-              const isDay = index % 2 === 0; 
-              this.currentRoster[emp.id] = { isDescanso: false, blocks: isDay ? '06:00 - 18:00 (Supervisor)' : '18:00 - 06:00 (Supervisor)', meal: isDay ? '12:00 - 12:45' : '00:00 - 00:45' };
-            } else if (emp.role === 'Encargado') {
-              const startH = 4 + (encCount % 6) * 2; 
-              this.currentRoster[emp.id] = { isDescanso: false, blocks: `${String(startH).padStart(2,'0')}:00 - ${String(startH+10).padStart(2,'0')}:00 (Encargado)`, meal: `${String(startH+4).padStart(2,'0')}:00 - ${String(startH+4).padStart(2,'0')}:45` };
-              encCount++;
-            } else if (emp.role === 'Operador') {
-              const startH = 5 + (opeCount % 6) * 2;
-              this.currentRoster[emp.id] = { isDescanso: false, blocks: `${String(startH).padStart(2,'0')}:00 - ${String(startH+10).padStart(2,'0')}:00 (Operador)`, meal: `${String(startH+5).padStart(2,'0')}:00 - ${String(startH+5).padStart(2,'0')}:45` };
-              opeCount++;
-            } else {
-              const isPartido = this.globalRules.evitarTurnoPartido ? false : (rampCount % 3 === 0);
-              if(isPartido) {
-                 const b1Start = 4 + (rampCount % 4); 
-                 const b2Start = b1Start + 5 + 3; 
-                 this.currentRoster[emp.id] = { isDescanso: false, blocks: `${String(b1Start).padStart(2,'0')}:00 - ${String(b1Start+5).padStart(2,'0')}:00 (Rampa) / ${String(b2Start).padStart(2,'0')}:00 - ${String(b2Start+5).padStart(2,'0')}:00 (Recepción)`, meal: `Partido (sin comida)` };
-              } else {
-                 const startH = 3 + (rampCount % 10); 
-                 let tarea = 'Rampa';
-                 if(rampCount % 4 === 1) tarea = 'Recepción';
-                 if(rampCount % 4 === 2) tarea = 'Maletero';
-                 this.currentRoster[emp.id] = { isDescanso: false, blocks: `${String(startH).padStart(2,'0')}:00 - ${String(startH+10).padStart(2,'0')}:00 (${tarea})`, meal: `${String(startH+4).padStart(2,'0')}:00 - ${String(startH+4).padStart(2,'0')}:45` };
-              }
-              rampCount++;
-            }
-          });
-        },
+  // Paso 1: Construir bloques de demanda del día seleccionado
+  const todayFlights = this.flights.filter(f => f.active && f.days.includes(this.selectedDay));
 
+  const toMins = (t) => {
+    if (!t) return 0;
+    const p = String(t).split(':');
+    return (parseInt(p[0]) || 0) * 60 + (parseInt(p[1]) || 0);
+  };
+  const toHHMM = (mins) => {
+    const m = ((mins % 1440) + 1440) % 1440;
+    return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
+  };
+
+  // Cada vuelo genera un bloque: desde ETA-15min hasta ETD
+  const demandBlocks = todayFlights.map(f => {
+    const rules = this.airlineRules[f.airline] || { receptores: 2, maleteros: 3 };
+    const needed = 7 + (rules.receptores || 2) + (rules.maleteros || 3);
+    const start = toMins(f.eta) - 15;
+    const end = toMins(f.etd);
+    return { flightId: f.id, label: `${f.airline} ${f.flightNo}`, start, end, needed };
+  }).sort((a, b) => a.start - b.start);
+
+  // Paso 2: Agrupar bloques cercanos (hueco < 180 mins = mismo turno continuo)
+  const turnoGroups = [];
+  for (const block of demandBlocks) {
+    const last = turnoGroups[turnoGroups.length - 1];
+    if (last && (block.start - last.end) < 180) {
+      last.end = Math.max(last.end, block.end);
+      last.needed = Math.max(last.needed, block.needed);
+      last.labels.push(block.label);
+    } else {
+      turnoGroups.push({ start: block.start, end: block.end, needed: block.needed, labels: [block.label] });
+    }
+  }
+
+  // Paso 3: Pool de operativos disponibles
+  const operativos = this.staff.filter(s => s.role === 'Operativo' && s.active);
+  let poolIndex = 0;
+  let totalNeeded = 0;
+  let totalCovered = 0;
+
+  // Paso 4: Asignar operativos a cada grupo de turno
+  // Un operativo puede cubrir múltiples grupos si sus horas acumuladas no superan 10h
+  // y el hueco entre grupos es >= 180 min (turno partido válido)
+  const empHours = {}; // empId -> { totalMins, lastEnd, blocks[] }
+  operativos.forEach(e => { empHours[e.id] = { totalMins: 0, lastEnd: null, blocks: [] }; });
+
+  for (const grupo of turnoGroups) {
+    const durMins = grupo.end - grupo.start;
+    totalNeeded += grupo.needed;
+
+    let assigned = 0;
+    for (const emp of operativos) {
+      if (assigned >= grupo.needed) break;
+      const state = empHours[emp.id];
+      const newTotal = state.totalMins + durMins;
+      if (newTotal > 600) continue; // Máximo 10h (600 min)
+
+      // Verificar turno partido: si ya tiene bloques, el hueco debe ser >= 180 min
+      if (state.lastEnd !== null) {
+        const gap = grupo.start - state.lastEnd;
+        if (gap < 0) continue;       // Se traslapa, no puede
+        if (gap > 0 && gap < 180) continue; // Hueco entre 1 y 179 min: no alcanza para partido ni continuo válido
+      }
+
+      // Asignar
+      state.blocks.push({ start: grupo.start, end: grupo.end, label: grupo.labels.join(' / ') });
+      state.totalMins += durMins;
+      state.lastEnd = grupo.end;
+      assigned++;
+      totalCovered++;
+    }
+    poolIndex = assigned;
+  }
+
+  // Paso 5: Construir roster para operativos
+  operativos.forEach(emp => {
+    const state = empHours[emp.id];
+    if (state.blocks.length === 0) {
+      this.currentRoster[emp.id] = { isDescanso: true, blocks: '-', meal: 'Libre' };
+      return;
+    }
+
+    const blockStr = state.blocks.map(b => {
+      const dur = b.end - b.start;
+      const mealNote = dur >= 300 ? ` (+45min comida)` : '';
+      return `${toHHMM(b.start)} - ${toHHMM(b.end)} (${b.label})${mealNote}`;
+    }).join(' / ');
+
+    // Calcular comida: si turno >= 5h, insertar a mitad del primer bloque largo
+    let mealStr = '-';
+    const firstLong = state.blocks.find(b => (b.end - b.start) >= 300);
+    if (firstLong) {
+      const mealStart = firstLong.start + Math.floor((firstLong.end - firstLong.start) / 2);
+      mealStr = `${toHHMM(mealStart)} - ${toHHMM(mealStart + 45)}`;
+    }
+
+    this.currentRoster[emp.id] = { isDescanso: false, blocks: blockStr, meal: mealStr };
+  });
+
+  // Paso 6: Supervisores (turno fijo 12h, rotación día/noche)
+  this.staff.filter(s => s.role === 'Supervisor' && s.active).forEach((emp, i) => {
+    const isDay = i % 2 === 0;
+    this.currentRoster[emp.id] = {
+      isDescanso: false,
+      blocks: isDay ? '06:00 - 18:00 (Supervisor día)' : '18:00 - 06:00 (Supervisor noche)',
+      meal: isDay ? '12:00 - 12:45' : '00:00 - 00:45'
+    };
+  });
+
+  // Paso 7: Encargados y Operadores (turno fijo 10h escalonado por demanda)
+  let encCount = 0, opeCount = 0;
+  const firstFlight = turnoGroups[0]?.start ?? 300;
+  this.staff.filter(s => s.role === 'Encargado' && s.active).forEach(emp => {
+    const startH = Math.max(0, firstFlight - 30 + encCount * 60);
+    this.currentRoster[emp.id] = {
+      isDescanso: false,
+      blocks: `${toHHMM(startH)} - ${toHHMM(startH + 600)} (Encargado)`,
+      meal: `${toHHMM(startH + 270)} - ${toHHMM(startH + 315)}`
+    };
+    encCount++;
+  });
+  this.staff.filter(s => s.role === 'Operador' && s.active).forEach(emp => {
+    const startH = Math.max(0, firstFlight - 15 + opeCount * 60);
+    this.currentRoster[emp.id] = {
+      isDescanso: false,
+      blocks: `${toHHMM(startH)} - ${toHHMM(startH + 600)} (Operador)`,
+      meal: `${toHHMM(startH + 300)} - ${toHHMM(startH + 345)}`
+    };
+    opeCount++;
+  });
+
+  // Paso 8: Guardar métricas reales de cobertura
+  const pct = totalNeeded > 0 ? Math.round((totalCovered / totalNeeded) * 100) : 100;
+  this.coverageMetrics = {
+    percent: pct,
+    deficientHours: totalNeeded - totalCovered,
+    hoursIdle: operativos.filter(e => this.currentRoster[e.id]?.isDescanso).length
+  };
+  if (pct < 100) {
+    this.smartAlerts = [{
+      type: 'warning',
+      message: `Déficit de personal: se necesitan ${totalNeeded} asignaciones pero solo se cubrieron ${totalCovered} (${pct}% de cobertura). Faltan ${totalNeeded - totalCovered} posiciones.`
+    }];
+  } else {
+    this.smartAlerts = [{ type: 'success', message: `Cobertura completa al 100%. ${operativos.filter(e => this.currentRoster[e.id]?.isDescanso).length} operativos en descanso.` }];
+  }
+},
         getRosterStatus(empId) {
           return this.currentRoster[empId] || { isDescanso: true, blocks: '-', meal: '-' };
         },

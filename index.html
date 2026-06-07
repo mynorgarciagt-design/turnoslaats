@@ -492,50 +492,57 @@
           return slots;
         };
 
-        // ── PASO 3: Asignación con rotación justa y límite 10h estricto ──
+       // ── PASO 3: Asignación por disponibilidad horaria real ──
         const assignDayPool=(empPool,freeSchedule,day,slots,empMonthState)=>{
           const deficits=[];
-          // Ordenar empleados por horas trabajadas este día (ascendente) para distribuir carga
-          const availableEmps=empPool
-            .map((emp,i)=>({emp,i,dayMins:(empMonthState[emp.id].days[day]||{total:0}).total}))
-            .filter(e=>!freeSchedule[e.i].has(day))
-            .sort((a,b)=>a.dayMins-b.dayMins);
 
           for(const slot of slots){
             let assigned=false;
-            for(const {emp,i} of availableEmps){
+            let bestIdx=-1;
+            let bestTotal=Infinity;
+
+            // Buscar el empleado disponible con MENOS horas ese día
+            // que pueda cubrir este slot específico
+            for(let i=0;i<empPool.length;i++){
               if(freeSchedule[i].has(day)) continue;
-              const empId=emp.id;
+              const empId=empPool[i].id;
               if(!empMonthState[empId].days[day])
                 empMonthState[empId].days[day]={total:0,lastEnd:null,blocks:[]};
-              const dayData=empMonthState[empId].days[day];
+              const d=empMonthState[empId].days[day];
 
-              // Límite 10h estricto
-              if(dayData.total+slot.dur>MAX_MINS) continue;
+              // 1. No superar 10h
+              if(d.total+slot.dur>MAX_MINS) continue;
 
-              // Verificar compatibilidad horaria
-              if(dayData.lastEnd!==null){
-                const gap=slot.start-dayData.lastEnd;
-                if(gap<0) continue; // traslape
-                if(gap>0&&gap<MIN_PARTIDO) continue; // hueco inválido para partido
+              // 2. Compatibilidad horaria
+              if(d.lastEnd!==null){
+                const gap=slot.start-d.lastEnd;
+                // Traslape: no puede
+                if(gap<0) continue;
+                // Hueco entre 1 y MIN_PARTIDO mins: solo ok si gap<=30 (continuo)
+                if(gap>30&&gap<MIN_PARTIDO) continue;
               }
 
-              dayData.blocks.push({start:slot.start,end:slot.end,label:slot.label});
-              dayData.total+=slot.dur;
-              dayData.lastEnd=slot.end;
-              assigned=true;
-              // Re-ordenar para siguiente slot (el que menos horas tiene va primero)
-              availableEmps.sort((a,b)=>
-                (empMonthState[a.emp.id].days[day]||{total:0}).total -
-                (empMonthState[b.emp.id].days[day]||{total:0}).total
-              );
-              break;
+              // 3. Elegir el que menos horas acumula (distribución justa)
+              if(d.total<bestTotal){
+                bestTotal=d.total;
+                bestIdx=i;
+              }
             }
+
+            if(bestIdx>-1){
+              const empId=empPool[bestIdx].id;
+              const d=empMonthState[empId].days[day];
+              d.blocks.push({start:slot.start,end:slot.end,label:slot.label});
+              d.total+=slot.dur;
+              d.lastEnd=slot.end;
+              assigned=true;
+            }
+
             if(!assigned) deficits.push(slot);
           }
           return deficits;
         };
-
+        
         // ── PASO 4: Construir estado mensual ──
         const buildMonthState=(pool)=>{
           const s={};

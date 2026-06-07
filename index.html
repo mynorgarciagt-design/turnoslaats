@@ -411,6 +411,22 @@
         }).length;
       },
  
+    generateTurnos(){
+        this.generationProgress=0;
+        const steps=[15,40,65,90,100];
+        let i=0;
+        const go=()=>{
+          if(i<steps.length){this.generationProgress=steps[i++];setTimeout(go,100);}
+          else{
+            this.generationProgress=null;
+            this.scheduleGenerated=true;
+            try{ this.buildRealRoster(); }
+            catch(err){ alert('Error generando turnos: '+err.message); console.error(err); }
+          }
+        };
+        go();
+      },
+
       // ── MOTOR MENSUAL ──
       buildRealRoster(){
         this.currentRoster={};

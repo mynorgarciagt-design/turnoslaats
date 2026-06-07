@@ -421,7 +421,7 @@
         const MAX_MINS=R.maxHorasDiarias*60;
         const MIN_PARTIDO=R.minDescansoPartido;
         const MINS_ANTES=R.minutosAntesVuelo;
-        const DIAS=this.daysInMonth;
+        const DIAS=new Date(this.selectedYear,this.selectedMonth,0).getDate();
  
         // PASO 1: Días libres rotativos (2/semana por empleado)
         const buildFreeSchedule=(poolSize)=>{

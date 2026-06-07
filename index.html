@@ -248,7 +248,7 @@
       selectedEmp:null,
       editingFlight:null, editingStaff:null, disableModalOpen:false,
       disableReason:'', selectedStaffToDisable:null,
-      extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmp:'',
+      extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmps:[], overtimeSummary:[],
       generationProgress:null, scheduleGenerated:false,
       csvStatus:'', saveStatus:'',
       // Data
@@ -394,9 +394,10 @@
       getLiveStaffCount(){
         if(!this.scheduleGenerated)return 0;
         const check=this.toMins(this.nowTime);
+        const day=this.selectedDay;
         return this.staff.filter(emp=>{
           if(!emp.active||emp.role==='Supervisor')return false;
-          const st=this.getRosterStatus(emp.id);
+          const st=this.getRosterStatus(emp.id,day);
           if(st.isDescanso||st.blocks==='-')return false;
           for(const seg of st.blocks.split(' / ')){
             const m=seg.match(/(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})/);
@@ -410,199 +411,223 @@
         }).length;
       },
  
-      // ── ALGORITMO PRINCIPAL ──
+      // ── MOTOR MENSUAL ──
       buildRealRoster(){
         this.currentRoster={};
-        this.extraShifts={};
+        this.extraShifts=this.extraShifts||{};
         this.overtimeAlerts=[];
-        const todayFlights=this.flights.filter(f=>f.active&&f.days.includes(this.selectedDay));
+        this.overtimeSummary=[];
         const R=this.algorithmRules;
+        const MAX_MINS=R.maxHorasDiarias*60;
+        const MIN_PARTIDO=R.minDescansoPartido;
+        const MINS_ANTES=R.minutosAntesVuelo;
+        const DIAS=this.daysInMonth;
  
-        // Bloques de demanda
-        const demandBlocks=todayFlights.map(f=>{
-          const rules=this.airlineRules[f.airline]||{agentesRampa:7,receptores:2,maleteros:3};
-          const start=this.toMins(f.eta)-R.minutosAntesVuelo;
-          const end=this.toMins(f.etd);
-          return{
-            flightId:f.id,
-            label:`${f.airline} ${f.flightNo}`,
-            start,end,
-            rampaNeeded:rules.agentesRampa||7,
-            encargadosNeeded:R.encargadosPorVuelo,
-            operadoresNeeded:R.operadoresPorVuelo,
-          };
-        }).sort((a,b)=>a.start-b.start);
- 
-        // Agrupar vuelos cercanos
-        const grupos=[];
-        for(const b of demandBlocks){
-          const last=grupos[grupos.length-1];
-          if(last&&(b.start-last.end)<R.umbralAgrupar){
-            last.end=Math.max(last.end,b.end);
-            last.rampaNeeded=Math.max(last.rampaNeeded,b.rampaNeeded);
-            last.encargadosNeeded+=b.encargadosNeeded;
-            last.operadoresNeeded+=b.operadoresNeeded;
-            last.labels.push(b.label);
-            last.flightIds.push(b.flightId);
-          }else{
-            grupos.push({...b,labels:[b.label],flightIds:[b.flightId]});
+        // PASO 1: Días libres rotativos (2/semana por empleado)
+        const buildFreeSchedule=(poolSize)=>{
+          const schedule={};
+          for(let i=0;i<poolSize;i++)schedule[i]=new Set();
+          let d=1;
+          while(d<=DIAS){
+            const weekEnd=Math.min(d+6,DIAS);
+            const week=[];
+            for(let x=d;x<=weekEnd;x++)week.push(x);
+            const wLen=week.length;
+            for(let i=0;i<poolSize;i++){
+              const p1=(i*2)%wLen;
+              const p2=(i*2+1)%wLen;
+              schedule[i].add(week[p1]);
+              schedule[i].add(week[p2]);
+            }
+            d=weekEnd+1;
           }
-        }
+          return schedule;
+        };
  
-        // Función asignación genérica
-        const assignPool=(pool,grupos,getNeeded,roleName)=>{
-          const empState={};
-          pool.forEach(e=>{empState[e.id]={totalMins:0,lastEnd:null,blocks:[]};});
-          let totalNeeded=0,totalCovered=0;
+        // PASO 2: Slots individuales por vuelo para un día y rol
+        const getSlotsForDay=(day,role)=>{
+          const slots=[];
+          this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
+            const rules=this.airlineRules[f.airline]||{agentesRampa:7,receptores:2,maleteros:3};
+            let start=this.toMins(f.eta)-MINS_ANTES;
+            let end=this.toMins(f.etd);
+            if(end<=start)end+=1440;
+            const count=role==='rampa'?(rules.agentesRampa||7):role==='encargado'?(R.encargadosPorVuelo||1):(R.operadoresPorVuelo||1);
+            for(let k=0;k<count;k++){
+              slots.push({start,end,dur:end-start,label:`${f.airline} ${f.flightNo}`,flightId:f.id,day});
+            }
+          });
+          slots.sort((a,b)=>a.start-b.start);
+          return slots;
+        };
+ 
+        // PASO 3: Asignar pool a slots de un día
+        const assignDayPool=(empPool,freeSchedule,day,slots,empMonthState)=>{
           const deficits=[];
- 
-          for(const g of grupos){
-            const needed=getNeeded(g);
-            totalNeeded+=needed;
-            let assigned=0;
-            const dur=g.end-g.start;
- 
-            for(const emp of pool){
-              if(assigned>=needed)break;
-              const st=empState[emp.id];
-              if(st.totalMins+dur>R.maxHorasDiarias*60)continue;
-              if(st.lastEnd!==null){
-                const gap=g.start-st.lastEnd;
+          for(const slot of slots){
+            let assigned=false;
+            for(let i=0;i<empPool.length;i++){
+              if(freeSchedule[i].has(day))continue;
+              const empId=empPool[i].id;
+              if(!empMonthState[empId].days[day])empMonthState[empId].days[day]={total:0,lastEnd:null,blocks:[]};
+              const dayData=empMonthState[empId].days[day];
+              if(dayData.total+slot.dur>MAX_MINS)continue;
+              if(dayData.lastEnd!==null){
+                const gap=slot.start-dayData.lastEnd;
                 if(gap<0)continue;
-                if(gap>0&&gap<R.minDescansoPartido)continue;
-                if(dur<R.minHorasBloque*60&&gap>0)continue;
+                if(gap>30&&gap<MIN_PARTIDO)continue;
               }
-              st.blocks.push({start:g.start,end:g.end,label:g.labels.join('+')});
-              st.totalMins+=dur;
-              st.lastEnd=g.end;
-              assigned++;
-              totalCovered++;
+              dayData.blocks.push({start:slot.start,end:slot.end,label:slot.label});
+              dayData.total+=slot.dur;
+              dayData.lastEnd=slot.end;
+              assigned=true;
+              break;
             }
- 
-            if(assigned<needed){
-              const faltantes=needed-assigned;
-              deficits.push({
-                day:this.selectedDay,
-                month:this.monthName,
-                labels:g.labels,
-                rol:roleName,
-                faltantes,
-                start:g.start,
-                end:g.end,
-                key:`${this.selectedDay}-${g.start}-${roleName}`
-              });
-            }
+            if(!assigned)deficits.push(slot);
           }
-          return{empState,totalNeeded,totalCovered,deficits};
+          return deficits;
         };
  
-        const buildEntry=(emp,empState)=>{
-          const st=empState[emp.id];
-          if(!st||st.blocks.length===0){
-            this.currentRoster[emp.id]={isDescanso:true,blocks:'-',meal:'-'};
-            return;
-          }
-          const blockStr=st.blocks.map(b=>{
-            const dur=b.end-b.start;
-            const extra=dur>=R.umbralComida?' (+comida)':'';
-            return`${this.toHHMM(b.start)} - ${this.toHHMM(b.end)} [${b.label}]${extra}`;
-          }).join(' / ');
-          let meal='-';
-          const firstLong=st.blocks.find(b=>(b.end-b.start)>=R.umbralComida);
-          if(firstLong){
-            const mid=firstLong.start+Math.floor((firstLong.end-firstLong.start)/2);
-            meal=`${this.toHHMM(mid)} - ${this.toHHMM(mid+R.minutosComida)}`;
-          }
-          this.currentRoster[emp.id]={isDescanso:false,blocks:blockStr,meal};
-        };
- 
+        // Pools
         const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
         const encargados=this.staff.filter(s=>s.role==='Encargado'&&s.active);
         const operadores=this.staff.filter(s=>s.role==='Operador'&&s.active);
  
-        const rR=assignPool(rampas,grupos,g=>g.rampaNeeded,'Agente de Rampa');
-        const eR=assignPool(encargados,grupos,g=>g.encargadosNeeded,'Encargado de Vuelo');
-        const oR=assignPool(operadores,grupos,g=>g.operadoresNeeded,'Operador');
+        const rampaFree=buildFreeSchedule(rampas.length);
+        const encFree=buildFreeSchedule(encargados.length);
+        const opeFree=buildFreeSchedule(operadores.length);
  
-        rampas.forEach(e=>buildEntry(e,rR.empState));
-        encargados.forEach(e=>buildEntry(e,eR.empState));
-        operadores.forEach(e=>buildEntry(e,oR.empState));
-        this.staff.filter(s=>s.role==='Supervisor').forEach(e=>{
-          this.currentRoster[e.id]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
+        const buildMonthState=(pool)=>{
+          const s={};pool.forEach(e=>{s[e.id]={days:{}};});return s;
+        };
+        const rampaState=buildMonthState(rampas);
+        const encState=buildMonthState(encargados);
+        const opeState=buildMonthState(operadores);
+ 
+        const allDeficits=[];
+ 
+        // PASO 4: Iterar cada día del mes
+        for(let day=1;day<=DIAS;day++){
+          if(!this.flights.some(f=>f.active&&f.days.includes(day)))continue;
+          assignDayPool(rampas,rampaFree,day,getSlotsForDay(day,'rampa'),rampaState).forEach(d=>allDeficits.push({...d,rol:'Agente de Rampa'}));
+          assignDayPool(encargados,encFree,day,getSlotsForDay(day,'encargado'),encState).forEach(d=>allDeficits.push({...d,rol:'Encargado de Vuelo'}));
+          assignDayPool(operadores,opeFree,day,getSlotsForDay(day,'operador'),opeState).forEach(d=>allDeficits.push({...d,rol:'Operador'}));
+        }
+ 
+        // PASO 5: Construir currentRoster[empId][day]
+        const buildRosterFromState=(pool,freeSchedule,monthState)=>{
+          pool.forEach((emp,i)=>{
+            const empEntry={};
+            for(let day=1;day<=DIAS;day++){
+              const isFree=freeSchedule[i].has(day);
+              const dayData=monthState[emp.id].days[day];
+              if(isFree||!dayData||dayData.blocks.length===0){
+                empEntry[day]={isDescanso:true,blocks:'-',meal:'-'};
+              }else{
+                const blockStr=dayData.blocks.map(b=>{
+                  const dur=b.end-b.start;
+                  return`${this.toHHMM(b.start)} - ${this.toHHMM(b.end)} [${b.label}]${dur>=R.umbralComida?' (+comida)':''}`;
+                }).join(' / ');
+                let meal='-';
+                const longB=dayData.blocks.find(b=>(b.end-b.start)>=R.umbralComida);
+                if(longB){const mid=longB.start+Math.floor((longB.end-longB.start)/2);meal=`${this.toHHMM(mid)} - ${this.toHHMM(mid+R.minutosComida)}`;}
+                empEntry[day]={isDescanso:false,blocks:blockStr,meal};
+              }
+            }
+            this.currentRoster[emp.id]=empEntry;
+          });
+        };
+ 
+        buildRosterFromState(rampas,rampaFree,rampaState);
+        buildRosterFromState(encargados,encFree,encState);
+        buildRosterFromState(operadores,opeFree,opeState);
+ 
+        // Supervisores
+        this.staff.filter(s=>s.role==='Supervisor').forEach(emp=>{
+          const entry={};
+          for(let day=1;day<=DIAS;day++)entry[day]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
+          this.currentRoster[emp.id]=entry;
         });
  
-        // Alertas horas extras
-        const allDeficits=[...rR.deficits,...eR.deficits,...oR.deficits];
-        this.overtimeAlerts=allDeficits.map(d=>({
-          ...d,
-          assignedEmp:null,
-          id:`OT-${d.key}`
-        }));
- 
-        // Pre-cargar asignaciones previas si existen
-        const prevExtras=this.extraShifts||{};
-        this.overtimeAlerts.forEach(a=>{
-          if(prevExtras[a.id]) a.assignedEmp=prevExtras[a.id];
+        // PASO 6: Alertas de horas extras por vuelo+día+rol
+        const defMap={};
+        allDeficits.forEach(d=>{
+          const key=`${d.day}-${d.flightId}-${d.rol}`;
+          if(!defMap[key])defMap[key]={...d,faltantes:0};
+          defMap[key].faltantes++;
         });
+        this.overtimeAlerts=Object.values(defMap).map(d=>({
+          id:`OT-${d.day}-${d.flightId}-${d.rol.replace(/\s/g,'')}`,
+          day:d.day,label:d.label,rol:d.rol,
+          start:d.start,end:d.end,faltantes:d.faltantes,
+          assignedEmps:this.extraShifts[`OT-${d.day}-${d.flightId}-${d.rol.replace(/\s/g,'')}`]||[],
+        })).sort((a,b)=>a.day-b.day||a.start-b.start);
  
-        // Métricas
-        const tN=rR.totalNeeded+eR.totalNeeded+oR.totalNeeded;
-        const tC=rR.totalCovered+eR.totalCovered+oR.totalCovered;
-        const pct=tN>0?Math.round((tC/tN)*100):100;
-        const libre=[...rampas,...encargados,...operadores].filter(e=>this.currentRoster[e.id]?.isDescanso).length;
-        this.coverageMetrics={percent:pct,deficientHours:tN-tC,hoursIdle:libre};
+        this.buildOvertimeSummary();
+ 
+        // PASO 7: Métricas
+        const totalSlots=allDeficits.length+
+          [rampaState,encState,opeState].reduce((sum,st)=>sum+Object.values(st).reduce((s,e)=>s+Object.values(e.days).reduce((ss,d)=>ss+d.blocks.length,0),0),0);
+        const pct=totalSlots>0?Math.round(((totalSlots-allDeficits.length)/totalSlots)*100):100;
+        this.coverageMetrics={percent:pct,deficientHours:allDeficits.length,hoursIdle:0};
  
         if(allDeficits.length>0){
-          this.smartAlerts=[{type:'warning',message:`Se necesitan ${allDeficits.reduce((a,d)=>a+d.faltantes,0)} horas extras distribuidas en ${allDeficits.length} vuelo(s). Revisa el panel de Horas Extras.`}];
+          this.smartAlerts=[{type:'warning',message:`Se necesitan ${allDeficits.length} posiciones extra en ${this.overtimeAlerts.length} vuelo(s) del mes. Revisa Horas Extras.`}];
         }else{
-          this.smartAlerts=[{type:'success',message:`Cobertura completa (100%). ${libre} colaboradores en descanso.`}];
+          this.smartAlerts=[{type:'success',message:`Cobertura completa (100%) para todo ${this.monthName}. Sin horas extras requeridas.`}];
         }
       },
  
-      generateTurnos(){
-        this.generationProgress=0;
-        const steps=[15,40,65,90,100];
-        let i=0;
-        const go=()=>{
-          if(i<steps.length){this.generationProgress=steps[i++];setTimeout(go,100);}
-          else{this.generationProgress=null;this.scheduleGenerated=true;this.buildRealRoster();}
-        };
-        go();
+      buildOvertimeSummary(){
+        const summary={};
+        this.overtimeAlerts.forEach(alert=>{
+          (alert.assignedEmps||[]).forEach(empName=>{
+            if(!summary[empName])summary[empName]={name:empName,slots:[],totalMins:0};
+            const dur=alert.end-alert.start;
+            summary[empName].slots.push({day:alert.day,label:alert.label,rol:alert.rol,start:alert.start,end:alert.end,mins:dur});
+            summary[empName].totalMins+=dur;
+          });
+        });
+        this.overtimeSummary=Object.values(summary).sort((a,b)=>b.totalMins-a.totalMins);
       },
  
-      getRosterStatus(empId){
-        return this.currentRoster[empId]||{isDescanso:true,blocks:'-',meal:'-'};
+      getRosterStatus(empId,day){
+        const d=day!==undefined?day:this.selectedDay;
+        const empRoster=this.currentRoster[empId];
+        if(!empRoster)return{isDescanso:true,blocks:'-',meal:'-'};
+        return empRoster[d]||{isDescanso:true,blocks:'-',meal:'-'};
       },
  
-      // Vista por empleado
       getEmpMonthView(empId){
         const rows=[];
+        const empRoster=this.currentRoster[empId]||{};
         for(let d=1;d<=this.daysInMonth;d++){
-          const prevDay=this.selectedDay;
-          this.selectedDay=d;
-          const st=this.getRosterStatus(empId);
-          this.selectedDay=prevDay;
-          rows.push({day:d,isDescanso:st.isDescanso,blocks:st.blocks,meal:st.meal});
+          const st=empRoster[d]||{isDescanso:true,blocks:'-',meal:'-'};
+          rows.push({day:d,...st});
         }
         return rows;
       },
  
-      // Horas extras
       openExtrasModal(slot){
-        this.selectedExtraSlot=slot;
-        this.extrasAssignEmp=slot.assignedEmp||'';
+        this.selectedExtraSlot=JSON.parse(JSON.stringify(slot));
+        this.extrasAssignEmps=[...(slot.assignedEmps||[])];
         this.extrasModalOpen=true;
       },
+ 
+      toggleExtraEmp(empName){
+        const idx=this.extrasAssignEmps.indexOf(empName);
+        if(idx>-1)this.extrasAssignEmps.splice(idx,1);
+        else if(this.extrasAssignEmps.length<this.selectedExtraSlot.faltantes)this.extrasAssignEmps.push(empName);
+      },
+ 
       saveExtraAssignment(){
         const idx=this.overtimeAlerts.findIndex(a=>a.id===this.selectedExtraSlot.id);
         if(idx>-1){
-          this.overtimeAlerts[idx].assignedEmp=this.extrasAssignEmp||null;
-          if(!this.extraShifts) this.extraShifts={};
-          if(this.extrasAssignEmp)
-            this.extraShifts[this.selectedExtraSlot.id]=this.extrasAssignEmp;
-          else
-            delete this.extraShifts[this.selectedExtraSlot.id];
+          this.overtimeAlerts[idx].assignedEmps=[...this.extrasAssignEmps];
+          if(!this.extraShifts)this.extraShifts={};
+          this.extraShifts[this.selectedExtraSlot.id]=[...this.extrasAssignEmps];
         }
+        this.buildOvertimeSummary();
         this.extrasModalOpen=false;
       },
  
@@ -700,7 +725,7 @@
         const data=[];
         const pool=this.getFilteredStaff().filter(s=>s.role!=='Supervisor');
         pool.forEach(emp=>{
-          const st=this.getRosterStatus(emp.id);
+          const st=this.getRosterStatus(emp.id,this.selectedDay);
           data.push({'ID':emp.id,'Nombre':emp.name,'Rol':emp.role,'Estado':st.isDescanso?'Libre':'Trabajando','Turno':st.blocks,'Comida':st.meal});
         });
         const ws=XLSX.utils.json_to_sheet(data);
@@ -715,10 +740,7 @@
         pool.forEach(emp=>{
           let row={'Nombre':emp.name,'Rol':emp.role};
           for(let d=1;d<=this.daysInMonth;d++){
-            const prevDay=this.selectedDay;
-            this.selectedDay=d;
-            const st=this.getRosterStatus(emp.id);
-            this.selectedDay=prevDay;
+            const st=this.getRosterStatus(emp.id,d);
             row[`Día ${d}`]=st.isDescanso?'LIBRE':st.blocks;
           }
           data.push(row);
@@ -1169,9 +1191,9 @@
                 <tr class="flight-row">
                   <td class="p-3"><div class="font-semibold text-primary text-xs" x-text="emp.name"></div><div class="text-[10px] text-tertiary mono" x-text="emp.id"></div></td>
                   <td class="p-3 mobile-hide"><span :class="getRoleColor(emp.role)" x-text="emp.role"></span></td>
-                  <td class="p-3 text-center"><span :class="getRosterStatus(emp.id).isDescanso?'pill-gray':'pill-green'" x-text="getRosterStatus(emp.id).isDescanso?'Libre':'Trabajando'"></span></td>
-                  <td class="p-3 text-xs mono text-primary" x-text="getRosterStatus(emp.id).blocks"></td>
-                  <td class="p-3 text-xs mono text-secondary mobile-hide" x-text="getRosterStatus(emp.id).meal||'—'"></td>
+                  <td class="p-3 text-center"><span :class="getRosterStatus(emp.id,selectedDay).isDescanso?'pill-gray':'pill-green'" x-text="getRosterStatus(emp.id,selectedDay).isDescanso?'Libre':'Trabajando'"></span></td>
+                  <td class="p-3 text-xs mono text-primary" x-text="getRosterStatus(emp.id,selectedDay).blocks"></td>
+                  <td class="p-3 text-xs mono text-secondary mobile-hide" x-text="getRosterStatus(emp.id,selectedDay).meal||'—'"></td>
                 </tr>
               </template>
             </tbody>
@@ -1264,30 +1286,62 @@
       </div>
  
       <div x-show="scheduleGenerated && overtimeAlerts.length===0" class="alert-success">
-        ✅ No se necesitan horas extras para el día <span x-text="selectedDay"></span> de <span x-text="monthName"></span>. La plantilla cubre toda la operación.
+        ✅ No se necesitan horas extras para <span x-text="monthName"></span>. La plantilla cubre toda la operación del mes.
       </div>
  
+      <!-- Lista de déficits por vuelo/día -->
       <div x-show="scheduleGenerated && overtimeAlerts.length>0" class="space-y-3">
         <template x-for="alert in overtimeAlerts" :key="alert.id">
           <div class="card p-5" style="border-left:4px solid #EF4444">
             <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <div class="flex items-center gap-2 mb-1">
+              <div class="flex-1">
+                <div class="flex items-center gap-2 mb-2 flex-wrap">
+                  <span class="font-bold text-primary text-base" x-text="'Día '+alert.day+' · '+alert.label"></span>
                   <span class="extras-badge" x-text="'+'+alert.faltantes+' personas'"></span>
-                  <span class="pill-red font-bold text-xs" x-text="alert.rol"></span>
+                  <span class="pill-red text-xs" x-text="alert.rol"></span>
                 </div>
-                <div class="font-bold text-primary text-sm" x-text="alert.labels.join(' + ')"></div>
-                <div class="text-xs text-secondary mono mt-1" x-text="'Horario: '+$data.toHHMM(alert.start)+' - '+$data.toHHMM(alert.end)"></div>
-                <template x-if="alert.assignedEmp">
-                  <div class="mt-2 text-xs" style="color:#3DBF82">
-                    ✅ Asignado: <span class="font-semibold" x-text="alert.assignedEmp"></span>
+                <div class="text-xs text-secondary mono" x-text="toHHMM(alert.start)+' - '+toHHMM(alert.end)"></div>
+                <template x-if="alert.assignedEmps && alert.assignedEmps.length>0">
+                  <div class="mt-2 space-y-0.5">
+                    <template x-for="emp in alert.assignedEmps" :key="emp">
+                      <div class="text-xs" style="color:#3DBF82">✅ <span x-text="emp"></span></div>
+                    </template>
                   </div>
                 </template>
               </div>
-              <button @click="openExtrasModal(alert)" class="btn-primary text-sm shrink-0" x-text="alert.assignedEmp?'Cambiar asignación':'Asignar empleado'"></button>
+              <button @click="openExtrasModal(alert)" class="btn-primary text-sm shrink-0"
+                x-text="(alert.assignedEmps&&alert.assignedEmps.length>0)?'Modificar asignación':'Asignar empleado(s)'"></button>
             </div>
           </div>
         </template>
+      </div>
+ 
+      <!-- Resumen mensual horas extras -->
+      <div x-show="scheduleGenerated && overtimeSummary.length>0" class="card overflow-hidden">
+        <div class="p-4" style="border-bottom:1px solid var(--border)">
+          <h3 class="font-bold text-primary">Resumen mensual de horas extras</h3>
+          <p class="text-xs text-secondary mt-0.5">Total acumulado por empleado en <span x-text="monthName"></span></p>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead><tr style="border-bottom:1px solid var(--border)">
+              <th class="text-left p-3 text-xs font-600 text-secondary uppercase">Empleado</th>
+              <th class="text-left p-3 text-xs font-600 text-secondary uppercase mobile-hide">Vuelos cubiertos</th>
+              <th class="text-right p-3 text-xs font-600 text-secondary uppercase">Total horas extras</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="row in overtimeSummary" :key="row.name">
+                <tr class="flight-row">
+                  <td class="p-3 font-semibold text-primary text-sm" x-text="row.name"></td>
+                  <td class="p-3 text-xs text-secondary mobile-hide" x-text="row.slots.map(s=>'Día '+s.day+' '+s.label).join(', ')"></td>
+                  <td class="p-3 text-right">
+                    <span class="extras-badge" x-text="Math.floor(row.totalMins/60)+'h '+( row.totalMins%60)+'min'"></span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
  
@@ -1362,23 +1416,36 @@
  
 <!-- Modal: Asignar hora extra -->
 <div x-show="extrasModalOpen" class="modal-overlay" style="display:none">
-  <div class="modal-box" @click.away="extrasModalOpen=false">
+  <div class="modal-box" style="max-width:520px" @click.away="extrasModalOpen=false">
     <h3 class="font-bold text-primary text-lg mb-1">Asignar hora extra</h3>
     <template x-if="selectedExtraSlot">
-      <div class="mb-5">
-        <p class="text-sm text-secondary">Vuelo: <span class="font-semibold text-primary" x-text="selectedExtraSlot?.labels?.join(' + ')"></span></p>
-        <p class="text-sm text-secondary">Rol faltante: <span class="font-semibold text-primary" x-text="selectedExtraSlot?.rol"></span></p>
-        <p class="text-sm text-secondary mono" x-text="'Horario: '+$data.toHHMM(selectedExtraSlot?.start||0)+' - '+$data.toHHMM(selectedExtraSlot?.end||0)"></p>
+      <div class="mb-4 p-3 rounded-xl" style="background:var(--surface2)">
+        <div class="font-bold text-primary" x-text="'Día '+selectedExtraSlot.day+' · '+selectedExtraSlot.label"></div>
+        <div class="text-sm text-secondary" x-text="selectedExtraSlot.rol"></div>
+        <div class="text-xs mono text-secondary" x-text="toHHMM(selectedExtraSlot.start)+' - '+toHHMM(selectedExtraSlot.end)+' ('+Math.floor((selectedExtraSlot.end-selectedExtraSlot.start)/60)+'h '+((selectedExtraSlot.end-selectedExtraSlot.start)%60)+'min)'"></div>
+        <div class="mt-2">
+          <span class="extras-badge" x-text="'Faltan '+selectedExtraSlot.faltantes+' personas'"></span>
+          <span class="text-xs text-secondary ml-2" x-text="'Seleccionados: '+extrasAssignEmps.length+'/'+selectedExtraSlot.faltantes"></span>
+        </div>
       </div>
     </template>
     <div>
-      <label class="text-xs font-600 text-secondary block mb-1.5">Empleado asignado a hora extra</label>
-      <select x-model="extrasAssignEmp" class="input-field">
-        <option value="">-- Sin asignar --</option>
+      <label class="text-xs font-600 text-secondary block mb-2">Selecciona empleado(s) para cubrir — filtra por rol recomendado</label>
+      <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
         <template x-for="emp in staff.filter(s=>s.active&&s.role!=='Supervisor')" :key="emp.id">
-          <option :value="emp.name" x-text="emp.name+' ('+emp.role+')'"></option>
+          <div @click="toggleExtraEmp(emp.name)" class="flex items-center gap-3 p-2 rounded-lg cursor-pointer transition"
+            :class="extrasAssignEmps.includes(emp.name)?'':'hover:bg-[var(--surface2)]'"
+            :style="extrasAssignEmps.includes(emp.name)?'background:var(--green-light);border:1.5px solid #A7F3D0':'border:1.5px solid transparent'">
+            <div class="w-5 h-5 rounded flex items-center justify-center shrink-0" :style="extrasAssignEmps.includes(emp.name)?'background:#3DBF82':'border:2px solid var(--border)'">
+              <span x-show="extrasAssignEmps.includes(emp.name)" class="text-white text-xs font-bold">✓</span>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="text-sm font-medium text-primary truncate" x-text="emp.name"></div>
+            </div>
+            <span :class="getRoleColor(emp.role)" x-text="emp.role"></span>
+          </div>
         </template>
-      </select>
+      </div>
     </div>
     <div class="flex justify-end gap-2 mt-6">
       <button @click="extrasModalOpen=false" class="btn-outline">Cancelar</button>

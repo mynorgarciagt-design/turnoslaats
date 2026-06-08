@@ -7,7 +7,6 @@
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/xlsx/dist/xlsx.full.min.js"></script>
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
-  <!-- Firebase Compat -->
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-auth-compat.js"></script>
   <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore-compat.js"></script>
@@ -122,7 +121,7 @@
   const auth = firebase.auth();
   const db   = firebase.firestore();
  
-  // ── PERSONAL REAL (96 empleados) ────────────────────────────
+  // ── PERSONAL REAL ────────────────────────────
   const STAFF_DATA = [
     {name:'AARON LUNA MIJANGOS',role:'Supervisor'},
     {name:'ALEXIS EDUARDO MORALES ESTEBAN',role:'Encargado'},
@@ -258,7 +257,7 @@
       airlineRules:JSON.parse(JSON.stringify(INITIAL_AIRLINE_RULES)),
       algorithmRules:{
         encargadosPorVuelo:1, operadoresPorVuelo:1,
-        minutosAntesVuelo:15, maxHorasDiarias:10,
+        minutosAntesVuelo:30, maxHorasDiarias:10,
         minHorasBloque:2, minDescansoPartido:180,
         minutosComida:45, umbralComida:300, umbralAgrupar:180,
       },
@@ -273,43 +272,33 @@
         this.buildStaff();
         this.updateClock();
         setInterval(()=>this.updateClock(),30000);
-        // Dark mode preference
         if(localStorage.getItem('laats-dark')==='1') this.enableDark();
-        // Firebase auth listener
         auth.onAuthStateChanged(u=>{
           this.user=u; this.authReady=true;
           if(u) this.loadFromFirestore();
         });
       },
  
-      // ── CLOCK ──
       updateClock(){
         const n=new Date();
         this.nowTime=`${String(n.getHours()).padStart(2,'0')}:${String(n.getMinutes()).padStart(2,'0')}`;
         const days=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
         const months=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
         this.nowDate=`${days[n.getDay()]}, ${n.getDate()} de ${months[n.getMonth()]} ${n.getFullYear()}`;
-        // auto-select today
         this.selectedDay=n.getDate();
         this.selectedMonth=n.getMonth()+1;
         this.selectedYear=n.getFullYear();
       },
- 
       get monthName(){
         const m=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
         return m[this.selectedMonth-1];
       },
+      get daysInMonth(){ return new Date(this.selectedYear,this.selectedMonth,0).getDate(); },
  
-      get daysInMonth(){
-        return new Date(this.selectedYear,this.selectedMonth,0).getDate();
-      },
- 
-      // ── DARK MODE ──
       enableDark(){ document.documentElement.classList.add('dark'); this.darkMode=true; localStorage.setItem('laats-dark','1'); },
       disableDark(){ document.documentElement.classList.remove('dark'); this.darkMode=false; localStorage.setItem('laats-dark','0'); },
       toggleDark(){ this.darkMode?this.disableDark():this.enableDark(); },
  
-      // ── AUTH ──
       async login(){
         this.loginLoading=true; this.loginError='';
         try{ await auth.signInWithEmailAndPassword(this.loginEmail,this.loginPassword); }
@@ -318,7 +307,6 @@
       },
       async logout(){ await auth.signOut(); this.flights=[]; this.currentRoster={}; this.scheduleGenerated=false; },
  
-      // ── FIRESTORE ──
       async loadFromFirestore(){
         try{
           const key=`laats_${this.selectedYear}_${this.selectedMonth}`;
@@ -336,22 +324,16 @@
             this.saveStatus='✅ Datos cargados desde la nube.';
             setTimeout(()=>this.saveStatus='',3000);
           }
-        }catch(e){ console.error('Error cargando Firestore',e); }
+        }catch(e){ console.error('Error cargando',e); }
       },
- 
       async saveToFirestore(){
         this.saveStatus='Guardando...';
         try{
           const key=`laats_${this.selectedYear}_${this.selectedMonth}`;
           await db.collection('laats_turnos').doc(key).set({
-            flights:this.flights,
-            airlineRules:this.airlineRules,
-            algorithmRules:this.algorithmRules,
-            currentRoster:this.currentRoster,
-            extraShifts:this.extraShifts,
-            smartAlerts:this.smartAlerts,
-            overtimeAlerts:this.overtimeAlerts,
-            coverageMetrics:this.coverageMetrics,
+            flights:this.flights, airlineRules:this.airlineRules, algorithmRules:this.algorithmRules,
+            currentRoster:this.currentRoster, extraShifts:this.extraShifts, smartAlerts:this.smartAlerts,
+            overtimeAlerts:this.overtimeAlerts, coverageMetrics:this.coverageMetrics,
             updatedAt:new Date().toISOString()
           });
           this.saveStatus='✅ Guardado en la nube.';
@@ -359,23 +341,14 @@
         }catch(e){ this.saveStatus='❌ Error al guardar.'; }
       },
  
-      // ── STAFF ──
       buildStaff(){
-        this.staff=STAFF_DATA.map((s,i)=>({
-          id:`EMP-${String(i+1).padStart(3,'0')}`,
-          name:s.name, role:s.role, active:true, disableReason:''
-        }));
+        this.staff=STAFF_DATA.map((s,i)=>({ id:`EMP-${String(i+1).padStart(3,'0')}`, name:s.name, role:s.role, active:true, disableReason:'' }));
       },
  
-      // ── HELPERS TIEMPO ──
       toMins(t){if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);},
       toHHMM(m){const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;},
  
-      // ── FLIGHTS ACTIVOS ──
-      getActiveFlightsCount(){
-        return this.flights.filter(f=>f.active&&f.days.includes(this.selectedDay)).length;
-      },
- 
+      getActiveFlightsCount(){ return this.flights.filter(f=>f.active&&f.days.includes(this.selectedDay)).length; },
       getFlightsAtTime(timeStr){
         const check=this.toMins(timeStr);
         return this.flights.filter(f=>{
@@ -388,7 +361,6 @@
           return c>=s&&c<=e;
         });
       },
- 
       get liveFlights(){ return this.getFlightsAtTime(this.nowTime); },
  
       getLiveStaffCount(){
@@ -411,7 +383,7 @@
         }).length;
       },
  
-    generateTurnos(){
+      generateTurnos(){
         this.generationProgress=0;
         const steps=[10,25,45,65,80,95,100];
         let i=0;
@@ -419,13 +391,8 @@
           if(i<steps.length){this.generationProgress=steps[i++];setTimeout(go,80);}
           else{
             this.generationProgress=null;
-            try{
-              this.buildRealRoster();
-              this.scheduleGenerated=true;
-            }catch(err){
-              alert('Error generando turnos: '+err.message);
-              console.error(err);
-            }
+            try{ this.buildRealRoster(); this.scheduleGenerated=true; }
+            catch(err){ alert('Error generando turnos: '+err.message); console.error(err); }
           }
         };
         go();
@@ -439,10 +406,8 @@
         const R=this.algorithmRules;
         const MAX_MINS=R.maxHorasDiarias*60;
         const MIN_PARTIDO=R.minDescansoPartido;
-        const MINS_ANTES=R.minutosAntesVuelo;
         const DIAS=new Date(this.selectedYear,this.selectedMonth,0).getDate();
 
-        // ── PASO 1: Días libres — exactamente 2 por semana, distribuidos para máxima cobertura ──
         const buildFreeSchedule=(poolSize)=>{
           const schedule={};
           for(let i=0;i<poolSize;i++) schedule[i]=new Set();
@@ -453,16 +418,12 @@
             const week=[];
             for(let x=d;x<=weekEnd;x++) week.push(x);
             const wLen=week.length;
-            const diasLibresPorDia=Math.floor(poolSize*2/wLen);
             const freeDayCount=new Array(wLen).fill(0);
             for(let i=0;i<poolSize;i++){
-              // Distribuir días libres equitativamente por posición en la semana
               const sorted=[...week.keys()].sort((a,b)=>freeDayCount[a]-freeDayCount[b]);
-              const p1=sorted[0];
-              freeDayCount[p1]++;
+              const p1=sorted[0]; freeDayCount[p1]++;
               const sorted2=[...week.keys()].filter(x=>x!==p1).sort((a,b)=>freeDayCount[a]-freeDayCount[b]);
-              const p2=sorted2[0];
-              freeDayCount[p2]++;
+              const p2=sorted2[0]; freeDayCount[p2]++;
               schedule[i].add(week[p1]);
               schedule[i].add(week[p2]);
             }
@@ -471,64 +432,74 @@
           return schedule;
         };
 
-        // ── PASO 2: Slots individuales por vuelo/día/rol ──
-        const getSlotsForDay=(day,role)=>{
-          const slots=[];
+        const getSlotsForDay=(day)=>{
+          const slotsRampa=[];
+          const slotsEnc=[];
+          const slotsOpe=[];
+
           this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
-            const rules=this.airlineRules[f.airline]||{agentesRampa:7,receptores:2,maleteros:3};
-            let start=this.toMins(f.eta)-MINS_ANTES;
-            let end=this.toMins(f.etd);
-            if(end<=start) end+=1440;
-            const count=role==='rampa'
-              ?(rules.agentesRampa||7)
-              :role==='encargado'
-              ?(R.encargadosPorVuelo||1)
-              :(R.operadoresPorVuelo||1);
-            for(let k=0;k<count;k++){
-              slots.push({start,end,dur:end-start,label:`${f.airline} ${f.flightNo}`,flightId:f.id,day});
+            const isAA = f.airline==='AA';
+            const recCount = isAA ? 4 : 2;
+            const rampaCount = 7;
+            const malCount = f.type==='DESPACHO' ? 0 : 3;
+
+            // Redondeos a medias horas para cumplimiento estricto
+            const roundDown = m => Math.floor(m/30)*30;
+            const roundUp = m => Math.ceil(m/30)*30;
+
+            let etaMins = this.toMins(f.eta);
+            let etdMins = this.toMins(f.etd);
+            if(etdMins<=etaMins) etdMins+=1440;
+
+            let sEnc = roundDown(etaMins);
+            let eEnc = roundUp(etdMins);
+            slotsEnc.push({start:sEnc,end:eEnc,dur:eEnc-sEnc,label:`${f.airline} (Enc)`,flightId:f.id,day,rol:'Encargado de Vuelo'});
+
+            let sOpe = roundDown(etaMins-30);
+            let eOpe = roundUp(etdMins);
+            slotsOpe.push({start:sOpe,end:eOpe,dur:eOpe-sOpe,label:`${f.airline} (Ope)`,flightId:f.id,day,rol:'Operador'});
+
+            let sRec = roundDown(etaMins-120);
+            let eRec = roundUp(etdMins);
+            for(let i=0;i<recCount;i++) slotsRampa.push({start:sRec,end:eRec,dur:eRec-sRec,label:`${f.airline} (Rec)`,flightId:f.id,day,rol:'Receptor'});
+
+            let sRam = roundDown(etaMins);
+            let eRam = roundUp(etdMins);
+            for(let i=0;i<rampaCount;i++) slotsRampa.push({start:sRam,end:eRam,dur:eRam-sRam,label:`${f.airline} (Rampa)`,flightId:f.id,day,rol:'Agente de Rampa'});
+
+            if(malCount>0){
+              let sMal = roundDown(etaMins);
+              let eMal = roundUp(etdMins);
+              for(let i=0;i<malCount;i++) slotsRampa.push({start:sMal,end:eMal,dur:eMal-sMal,label:`${f.airline} (Maletero)`,flightId:f.id,day,rol:'Maletero'});
             }
           });
-          slots.sort((a,b)=>a.start-b.start);
-          return slots;
+
+          return {
+            rampa: slotsRampa.sort((a,b)=>a.start-b.start),
+            enc: slotsEnc.sort((a,b)=>a.start-b.start),
+            ope: slotsOpe.sort((a,b)=>a.start-b.start)
+          };
         };
 
-       // ── PASO 3: Asignación por disponibilidad horaria real ──
         const assignDayPool=(empPool,freeSchedule,day,slots,empMonthState)=>{
           const deficits=[];
-
           for(const slot of slots){
-            let assigned=false;
-            let bestIdx=-1;
-            let bestTotal=Infinity;
-
-            // Buscar el empleado disponible con MENOS horas ese día
-            // que pueda cubrir este slot específico
+            let assigned=false, bestIdx=-1, bestTotal=Infinity;
             for(let i=0;i<empPool.length;i++){
               if(freeSchedule[i].has(day)) continue;
               const empId=empPool[i].id;
-              if(!empMonthState[empId].days[day])
-                empMonthState[empId].days[day]={total:0,lastEnd:null,blocks:[]};
+              if(!empMonthState[empId].days[day]) empMonthState[empId].days[day]={total:0,lastEnd:null,blocks:[]};
               const d=empMonthState[empId].days[day];
-
-              // 1. No superar 10h
+              
               if(d.total+slot.dur>MAX_MINS) continue;
-
-              // 2. Compatibilidad horaria
+              
               if(d.lastEnd!==null){
                 const gap=slot.start-d.lastEnd;
-                // Traslape: no puede
                 if(gap<0) continue;
-                // Hueco entre 1 y MIN_PARTIDO mins: solo ok si gap<=30 (continuo)
-                if(gap>30&&gap<MIN_PARTIDO) continue;
+                if(gap>30 && gap<MIN_PARTIDO) continue;
               }
-
-              // 3. Elegir el que menos horas acumula (distribución justa)
-              if(d.total<bestTotal){
-                bestTotal=d.total;
-                bestIdx=i;
-              }
+              if(d.total<bestTotal){ bestTotal=d.total; bestIdx=i; }
             }
-
             if(bestIdx>-1){
               const empId=empPool[bestIdx].id;
               const d=empMonthState[empId].days[day];
@@ -537,17 +508,13 @@
               d.lastEnd=slot.end;
               assigned=true;
             }
-
             if(!assigned) deficits.push(slot);
           }
           return deficits;
         };
         
-        // ── PASO 4: Construir estado mensual ──
         const buildMonthState=(pool)=>{
-          const s={};
-          pool.forEach(e=>{s[e.id]={days:{}};});
-          return s;
+          const s={}; pool.forEach(e=>{s[e.id]={days:{}};}); return s;
         };
 
         const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
@@ -564,18 +531,14 @@
 
         const allDeficits=[];
 
-        // ── PASO 5: Iterar mes completo ──
         for(let day=1;day<=DIAS;day++){
           if(!this.flights.some(f=>f.active&&f.days.includes(day))) continue;
-          assignDayPool(rampas,rampaFree,day,getSlotsForDay(day,'rampa'),rampaState)
-            .forEach(d=>allDeficits.push({...d,rol:'Agente de Rampa'}));
-          assignDayPool(encargados,encFree,day,getSlotsForDay(day,'encargado'),encState)
-            .forEach(d=>allDeficits.push({...d,rol:'Encargado de Vuelo'}));
-          assignDayPool(operadores,opeFree,day,getSlotsForDay(day,'operador'),opeState)
-            .forEach(d=>allDeficits.push({...d,rol:'Operador'}));
+          const s = getSlotsForDay(day);
+          assignDayPool(rampas,rampaFree,day,s.rampa,rampaState).forEach(d=>allDeficits.push({...d}));
+          assignDayPool(encargados,encFree,day,s.enc,encState).forEach(d=>allDeficits.push({...d}));
+          assignDayPool(operadores,opeFree,day,s.ope,opeState).forEach(d=>allDeficits.push({...d}));
         }
 
-        // ── PASO 6: Construir currentRoster[empId][day] ──
         const buildRosterFromState=(pool,freeSchedule,monthState)=>{
           pool.forEach((emp,i)=>{
             const empEntry={};
@@ -585,43 +548,40 @@
               if(isFree||!dayData||dayData.blocks.length===0){
                 empEntry[day]={isDescanso:true,blocks:'-',meal:'-'};
               }else{
-                // Detectar turno partido vs continuo
                 const blocks=dayData.blocks;
-                let blockStr='';
-                if(blocks.length===1){
-                  const b=blocks[0];
-                  const dur=b.end-b.start;
-                  const mealNote=dur>=R.umbralComida?' (+comida)':'';
-                  blockStr=`${this.toHHMM(b.start)} - ${this.toHHMM(b.end)} [${b.label}]${mealNote}`;
-                }else{
-                  // Agrupar bloques consecutivos (gap<=30min) en segmentos
-                  const segments=[];
-                  let seg={start:blocks[0].start,end:blocks[0].end,labels:[blocks[0].label]};
-                  for(let k=1;k<blocks.length;k++){
-                    const gap=blocks[k].start-seg.end;
-                    if(gap<=30){
-                      seg.end=blocks[k].end;
-                      seg.labels.push(blocks[k].label);
-                    }else{
-                      segments.push(seg);
-                      seg={start:blocks[k].start,end:blocks[k].end,labels:[blocks[k].label]};
-                    }
+                const segments=[];
+                let seg={start:blocks[0].start,end:blocks[0].end,labels:[blocks[0].label]};
+                
+                for(let k=1;k<blocks.length;k++){
+                  const gap=blocks[k].start-seg.end;
+                  if(gap<=30){
+                    seg.end=Math.max(seg.end,blocks[k].end);
+                    seg.labels.push(blocks[k].label);
+                  }else{
+                    // Garantiza mínimo de 2 horas por bloque partido
+                    if(seg.end-seg.start<120) seg.end=seg.start+120;
+                    segments.push(seg);
+                    seg={start:blocks[k].start,end:blocks[k].end,labels:[blocks[k].label]};
                   }
-                  segments.push(seg);
-                  blockStr=segments.map((s,idx)=>{
-                    const dur=s.end-s.start;
-                    const mealNote=dur>=R.umbralComida?' (+comida)':'';
-                    const prefix=segments.length>1?`Turno ${idx+1}: `:'';
-                    return`${prefix}${this.toHHMM(s.start)} - ${this.toHHMM(s.end)}${mealNote}`;
-                  }).join(' / ');
                 }
-                // Calcular comida
+                if(seg.end-seg.start<120) seg.end=seg.start+120;
+                segments.push(seg);
+
+                const blockStr=segments.map((s,idx)=>{
+                  const dur=s.end-s.start;
+                  const mealNote=dur>=R.umbralComida?' (+comida)':'';
+                  const prefix=segments.length>1?`T${idx+1}: `:'';
+                  const uniqueL=[...new Set(s.labels)].join(', ');
+                  return`${prefix}${this.toHHMM(s.start)} - ${this.toHHMM(s.end)} [${uniqueL}]${mealNote}`;
+                }).join(' / ');
+
                 let meal='-';
-                const longBlock=dayData.blocks.reduce((a,b)=>(b.end-b.start>a.end-a.start)?b:a,dayData.blocks[0]);
-                if((longBlock.end-longBlock.start)>=R.umbralComida){
-                  const mid=longBlock.start+Math.floor((longBlock.end-longBlock.start)/2);
+                const longSeg=segments.reduce((a,b)=>(b.end-b.start>a.end-a.start)?b:a,segments[0]);
+                if((longSeg.end-longSeg.start)>=R.umbralComida){
+                  const mid=longSeg.start+Math.floor((longSeg.end-longSeg.start)/2)-Math.floor(R.minutosComida/2);
                   meal=`${this.toHHMM(mid)} - ${this.toHHMM(mid+R.minutosComida)}`;
                 }
+
                 empEntry[day]={isDescanso:false,blocks:blockStr,meal};
               }
             }
@@ -633,15 +593,12 @@
         buildRosterFromState(encargados,encFree,encState);
         buildRosterFromState(operadores,opeFree,opeState);
 
-        // Supervisores
         this.staff.filter(s=>s.role==='Supervisor').forEach(emp=>{
           const entry={};
-          for(let day=1;day<=DIAS;day++)
-            entry[day]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
+          for(let day=1;day<=DIAS;day++) entry[day]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
           this.currentRoster[emp.id]=entry;
         });
 
-        // ── PASO 7: Alertas déficit por vuelo+día+rol ──
         const defMap={};
         allDeficits.forEach(d=>{
           const key=`${d.day}-${d.flightId}-${d.rol}`;
@@ -657,9 +614,7 @@
 
         this.buildOvertimeSummary();
 
-        // ── PASO 8: Métricas ──
-        const totalCovered=
-          [rampaState,encState,opeState].reduce((sum,st)=>
+        const totalCovered= [rampaState,encState,opeState].reduce((sum,st)=>
             sum+Object.values(st).reduce((s,e)=>
               s+Object.values(e.days).reduce((ss,d)=>ss+d.blocks.length,0),0),0);
         const totalNeeded=totalCovered+allDeficits.length;
@@ -670,11 +625,9 @@
           const porRol={};
           allDeficits.forEach(d=>{porRol[d.rol]=(porRol[d.rol]||0)+1;});
           const resumen=Object.entries(porRol).map(([r,n])=>`${n} ${r}`).join(', ');
-          this.smartAlerts=[{type:'warning',
-            message:`Faltan ${allDeficits.length} asignaciones en el mes: ${resumen}. Ver Horas Extras.`}];
+          this.smartAlerts=[{type:'warning', message:`Faltan ${allDeficits.length} asignaciones: ${resumen}. Ver Horas Extras.`}];
         }else{
-          this.smartAlerts=[{type:'success',
-            message:`Cobertura completa (100%) para todo ${this.monthName}. Sin horas extras requeridas.`}];
+          this.smartAlerts=[{type:'success', message:`Cobertura completa (100%) para ${this.monthName}. Sin horas extras requeridas.`}];
         }
       },
 
@@ -716,13 +669,11 @@
         this.extrasAssignEmps=[...(slot.assignedEmps||[])];
         this.extrasModalOpen=true;
       },
- 
       toggleExtraEmp(empName){
         const idx=this.extrasAssignEmps.indexOf(empName);
         if(idx>-1)this.extrasAssignEmps.splice(idx,1);
         else if(this.extrasAssignEmps.length<this.selectedExtraSlot.faltantes)this.extrasAssignEmps.push(empName);
       },
- 
       saveExtraAssignment(){
         const idx=this.overtimeAlerts.findIndex(a=>a.id===this.selectedExtraSlot.id);
         if(idx>-1){
@@ -734,7 +685,6 @@
         this.extrasModalOpen=false;
       },
  
-      // ── CRUD VUELOS ──
       addNewFlight(){this.editingFlight={id:'new',airline:'AA',flightNo:'',type:'TURN',eta:'12:00',etd:'13:00',days:[1],active:true};},
       editFlight(f){this.editingFlight=JSON.parse(JSON.stringify(f));},
       saveFlight(){
@@ -744,7 +694,6 @@
       },
       deleteFlight(id){this.flights=this.flights.filter(f=>f.id!==id);},
  
-      // ── CRUD PERSONAL ──
       addNewStaff(){this.editingStaff={id:'new',name:'',role:'Operativo',active:true,disableReason:''};},
       editStaff(e){this.editingStaff=JSON.parse(JSON.stringify(e));},
       saveStaff(){
@@ -761,7 +710,6 @@
       },
       enableStaff(emp){const i=this.staff.findIndex(s=>s.id===emp.id);if(i>-1){this.staff[i].active=true;this.staff[i].disableReason='';}},
  
-      // ── FILTROS ──
       getFilteredFlights(){
         let r=this.flights;
         if(this.flightFilter)r=r.filter(f=>f.airline===this.flightFilter);
@@ -774,7 +722,6 @@
         return this.staff.filter(s=>s.name.toLowerCase().includes(q)||s.id.toLowerCase().includes(q)||s.role.toLowerCase().includes(q));
       },
  
-      // ── IMPORTAR EXCEL ──
       importExcelFile(event){
         const file=event.target.files[0];if(!file)return;
         this.csvStatus='Procesando...';
@@ -791,39 +738,61 @@
       },
       processParsedRows(rows){
         try{
-          if(rows.length<3){this.csvStatus='Archivo muy corto.';return;}
-          const firstRow=rows[0];
-          const dayColIdx=[],dayNums=[];
-          for(let i=6;i<firstRow.length;i++){
-            const v=parseInt(firstRow[i]);
-            if(!isNaN(v)&&v>=1&&v<=31){dayColIdx.push(i);dayNums.push(v);}
-          }
-          if(dayColIdx.length===0)for(let i=6;i<=36;i++){dayColIdx.push(i);dayNums.push(i-5);}
-          const fmt=(t)=>{
-            if(typeof t==='number'){let m=Math.round(t*1440);return`${String(Math.floor(m/60)%24).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;}
-            if(!t)return'00:00';
-            const p=String(t).split(':');if(p.length>=2)return`${p[0].padStart(2,'0')}:${p[1].padStart(2,'0')}`;return String(t);
-          };
-          const parsed=[];let count=0;
-          for(let i=2;i<rows.length;i++){
-            const row=rows[i];if(!row||row.length<6)continue;
+          if(rows.length<2){this.csvStatus='Archivo muy corto.';return;}
+          const parsed=[];
+          let count=0;
+          
+          for(let i=1;i<rows.length;i++){
+            const row=rows[i];
+            if(!row||!row[0])continue;
             const airline=String(row[0]).trim().toUpperCase();
-            let flightNo=String(row[1]).trim();
-            if(!airline||airline==='AEROLINEA')continue;
-            if(flightNo.endsWith('.0'))flightNo=flightNo.replace('.0','');
+            if(airline==='AEROLINEA'||airline==='')continue;
+            
+            const type=String(row[1]).trim().toUpperCase();
+            
+            const fmt=(t)=>{
+              if(typeof t==='number'){let m=Math.round(t*1440);return`${String(Math.floor(m/60)%24).padStart(2,'0')}:${String(m%60).padStart(2,'0')}`;}
+              if(!t)return'00:00';
+              const p=String(t).split(':');if(p.length>=2)return`${p[0].padStart(2,'0')}:${p[1].padStart(2,'0')}`;return String(t);
+            };
+
+            const eta=fmt(row[2]);
+            const etd=fmt(row[3]);
+            
             const activeDays=[];
-            dayColIdx.forEach((col,idx)=>{const v=String(row[col]).trim();if(v==='1'||v==='1.0')activeDays.push(dayNums[idx]);});
+            // Empieza a leer desde la columna 4 que equivale a Día 1 (Lunes en tu CSV)
+            for(let d=4; d<row.length; d++){
+              const v=String(row[d]).trim();
+              if(v==='1'||v==='1.0') activeDays.push(d - 3);
+            }
+            
             if(activeDays.length>0){
-              parsed.push({id:'F-XLSX-'+Date.now()+count,airline,flightNo,type:String(row[3]||'TURN').trim().toUpperCase(),eta:fmt(row[4]),etd:fmt(row[5]),days:activeDays,active:true});
+              parsed.push({
+                id:'F-XLSX-'+Date.now()+count,
+                airline,
+                flightNo: String(count+1), 
+                type: type||'TURN',
+                eta,
+                etd,
+                days:activeDays,
+                active:true
+              });
               count++;
             }
           }
-          if(parsed.length>0){this.flights=parsed;this.scheduleGenerated=false;this.currentRoster={};this.csvStatus=`✅ ${count} vuelos cargados. Regenerá los turnos.`;}
-          else{this.csvStatus='No se detectaron vuelos.';}
-        }catch(e){this.csvStatus='Error procesando el archivo.';}
+          if(parsed.length>0){
+            this.flights=parsed;
+            this.scheduleGenerated=false;
+            this.currentRoster={};
+            this.csvStatus=`✅ ${count} vuelos cargados correctamente. Regenerá los turnos.`;
+          }else{
+            this.csvStatus='No se detectaron vuelos válidos.';
+          }
+        }catch(e){
+          this.csvStatus='Error procesando el archivo: '+e.message;
+        }
       },
  
-      // ── EXPORTAR ──
       exportRoster(){
         const data=[];
         const pool=this.getFilteredStaff().filter(s=>s.role!=='Supervisor');
@@ -854,7 +823,6 @@
         XLSX.writeFile(wb,`LAATS_${this.monthName}_Mensual.xlsx`);
       },
  
-      // ── HELPERS UI ──
       getRoleColor(r){
         if(r==='Encargado')return'pill-blue';
         if(r==='Operador')return'pill-green';
@@ -875,9 +843,6 @@
  
 <body x-data="appState()" x-cloak>
  
-<!-- ══════════════════════════════════════════
-     LOGIN SCREEN
-══════════════════════════════════════════ -->
 <div x-show="authReady && !user" class="login-bg">
   <div class="login-card">
     <div class="flex items-center gap-3 mb-8">
@@ -885,677 +850,3 @@
         <span class="text-white font-bold text-lg">L</span>
       </div>
       <div>
-        <div class="font-bold text-primary text-xl">LAATS</div>
-        <div class="text-secondary text-sm">Planificador Aeroportuario</div>
-      </div>
-    </div>
-    <h2 class="text-primary font-bold text-2xl mb-1">Bienvenido</h2>
-    <p class="text-secondary text-sm mb-6">Ingresa tus credenciales para continuar.</p>
-    <div class="space-y-3">
-      <div>
-        <label class="text-xs font-600 text-secondary block mb-1.5">Correo electrónico</label>
-        <input type="email" x-model="loginEmail" @keydown.enter="login()" placeholder="correo@ejemplo.com" class="input-field">
-      </div>
-      <div>
-        <label class="text-xs font-600 text-secondary block mb-1.5">Contraseña</label>
-        <input type="password" x-model="loginPassword" @keydown.enter="login()" placeholder="••••••••" class="input-field">
-      </div>
-    </div>
-    <div x-show="loginError" class="alert-red mt-3 text-sm" x-text="loginError"></div>
-    <button @click="login()" :disabled="loginLoading" class="btn-primary w-full mt-5 flex items-center justify-center gap-2">
-      <span x-text="loginLoading?'Ingresando...':'Ingresar'"></span>
-    </button>
-  </div>
-</div>
- 
-<!-- Loading -->
-<div x-show="!authReady" class="login-bg">
-  <div class="text-secondary text-sm">Cargando...</div>
-</div>
- 
-<!-- ══════════════════════════════════════════
-     APP PRINCIPAL
-══════════════════════════════════════════ -->
-<div x-show="authReady && user" class="min-h-screen flex flex-col">
- 
-  <!-- MOBILE OVERLAY -->
-  <div x-show="mobileMenuOpen" @click="mobileMenuOpen=false" class="fixed inset-0 bg-black/40 z-40 md:hidden"></div>
- 
-  <!-- MOBILE DRAWER -->
-  <div :class="mobileMenuOpen?'translate-x-0':'-translate-x-full'"
-    class="fixed top-0 left-0 h-full w-72 z-50 shadow-2xl transition-transform duration-300 md:hidden flex flex-col"
-    style="background:var(--surface)">
-    <div class="flex items-center justify-between p-5" style="border-bottom:1px solid var(--border)">
-      <div class="flex items-center gap-3">
-        <div class="w-9 h-9 rounded-xl flex items-center justify-center" style="background:#3DBF82">
-          <span class="text-white font-bold text-sm">L</span>
-        </div>
-        <div>
-          <div class="font-bold text-primary text-base">LAATS</div>
-          <div class="text-secondary text-xs" x-text="monthName+' '+selectedYear"></div>
-        </div>
-      </div>
-      <button @click="mobileMenuOpen=false" class="text-secondary text-xl">✕</button>
-    </div>
-    <nav class="p-4 flex flex-col gap-1">
-      <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Horas Extras'}]">
-        <button @click="currentTab=item.id;mobileMenuOpen=false"
-          :class="currentTab===item.id?'nav-btn active':'nav-btn'"
-          class="text-left w-full relative">
-          <span x-text="item.label"></span>
-          <template x-if="item.id==='horas_extras' && overtimeAlerts.length>0">
-            <span class="absolute right-3 top-2 w-5 h-5 rounded-full text-white text-[10px] font-bold flex items-center justify-center" style="background:#EF4444" x-text="overtimeAlerts.length"></span>
-          </template>
-        </button>
-      </template>
-    </nav>
-    <div class="mt-auto p-4" style="border-top:1px solid var(--border)">
-      <button @click="toggleDark()" class="btn-outline w-full mb-2 text-sm" x-text="darkMode?'☀️ Modo claro':'🌙 Modo oscuro'"></button>
-      <button @click="logout()" class="btn-outline w-full text-sm" style="color:#EF4444;border-color:#FCA5A5">Cerrar sesión</button>
-    </div>
-  </div>
- 
-  <!-- TOP NAV -->
-  <header class="sticky top-0 z-30" style="background:var(--surface);border-bottom:1px solid var(--border);box-shadow:0 1px 4px rgba(0,0,0,0.06)">
-    <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between gap-4">
-      <div class="flex items-center gap-3 shrink-0">
-        <button @click="mobileMenuOpen=true" class="md:hidden p-1.5 rounded-lg text-secondary" style="hover:background:var(--surface2)">
-          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
-        </button>
-        <div class="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style="background:#3DBF82">
-          <span class="text-white font-bold text-sm">L</span>
-        </div>
-        <div class="hidden sm:block">
-          <div class="font-bold text-primary text-base leading-none">LAATS</div>
-          <div class="text-secondary text-xs leading-none mt-0.5" x-text="monthName+' '+selectedYear"></div>
-        </div>
-      </div>
- 
-      <nav class="hidden md:flex items-center gap-1">
-        <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Horas Extras'}]">
-          <button @click="currentTab=item.id" :class="currentTab===item.id?'nav-btn active':'nav-btn'" class="relative">
-            <span x-text="item.label"></span>
-            <template x-if="item.id==='horas_extras' && overtimeAlerts.length>0">
-              <span class="absolute -top-1 -right-1 w-4 h-4 rounded-full text-white text-[9px] font-bold flex items-center justify-center" style="background:#EF4444" x-text="overtimeAlerts.length"></span>
-            </template>
-          </button>
-        </template>
-      </nav>
- 
-      <div class="flex items-center gap-2 shrink-0">
-        <div class="day-selector">
-          <button @click="selectedDay=Math.max(1,selectedDay-1)">‹</button>
-          <span class="day-num" x-text="monthName+' '+selectedDay"></span>
-          <button @click="selectedDay=Math.min(daysInMonth,selectedDay+1)">›</button>
-        </div>
-        <button @click="toggleDark()" class="p-2 rounded-lg text-secondary hover:text-primary mobile-hide" style="background:var(--surface2)" x-text="darkMode?'☀️':'🌙'"></button>
-        <button @click="saveToFirestore()" class="btn-outline text-sm mobile-hide px-3 py-2">💾 Guardar</button>
-        <button @click="logout()" class="hidden md:block text-sm font-medium text-secondary hover:text-primary px-2">Salir</button>
-      </div>
-    </div>
-  </header>
- 
-  <!-- SAVE STATUS -->
-  <div x-show="saveStatus" class="max-w-7xl mx-auto px-4 md:px-6 pt-3">
-    <div class="alert-success text-sm" x-text="saveStatus"></div>
-  </div>
- 
-  <!-- PAGE CONTENT -->
-  <main class="flex-1 max-w-7xl w-full mx-auto px-4 md:px-6 py-5 space-y-5">
- 
-    <!-- ═══════ INICIO ═══════ -->
-    <div x-show="currentTab==='inicio'" class="space-y-5">
-      <div class="card p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <p class="text-sm text-secondary font-medium" x-text="nowDate"></p>
-          <h2 class="text-2xl font-bold text-primary mt-0.5">Panel Operativo</h2>
-        </div>
-        <div class="flex items-center gap-3">
-          <div class="time-badge" x-text="nowTime"></div>
-          <div class="flex items-center gap-1.5">
-            <span class="w-2 h-2 rounded-full" style="background:#3DBF82"></span>
-            <span class="text-sm text-secondary font-medium">En vivo</span>
-          </div>
-        </div>
-      </div>
- 
-      <!-- KPIs -->
-      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <div class="card p-5">
-          <div class="text-xs font-600 text-secondary uppercase tracking-wide mb-2">Vuelos hoy</div>
-          <div class="text-3xl font-bold text-primary" x-text="getActiveFlightsCount()"></div>
-          <div class="text-xs text-tertiary mt-1" x-text="monthName+' '+selectedDay"></div>
-        </div>
-        <div class="card p-5">
-          <div class="text-xs font-600 text-secondary uppercase tracking-wide mb-2">En turno ahora</div>
-          <div class="text-3xl font-bold" style="color:#3DBF82" x-text="scheduleGenerated?getLiveStaffCount():'—'"></div>
-          <div class="text-xs text-tertiary mt-1">Colaboradores activos</div>
-        </div>
-        <div class="card p-5">
-          <div class="text-xs font-600 text-secondary uppercase tracking-wide mb-2">Total personal</div>
-          <div class="text-3xl font-bold text-primary" x-text="staff.filter(s=>s.active).length"></div>
-          <div class="text-xs text-tertiary mt-1">Activos en plantilla</div>
-        </div>
-        <div class="card p-5">
-          <div class="text-xs font-600 text-secondary uppercase tracking-wide mb-2">Cobertura</div>
-          <div class="text-3xl font-bold" :style="coverageMetrics.percent>=100?'color:#3DBF82':'color:#F59E0B'" x-text="scheduleGenerated?coverageMetrics.percent+'%':'—'"></div>
-          <div class="text-xs text-tertiary mt-1">Del turno generado</div>
-        </div>
-      </div>
- 
-      <!-- Vuelos en curso -->
-      <div class="card p-5">
-        <div class="flex items-center justify-between mb-4">
-          <div>
-            <h3 class="font-bold text-primary">Vuelos en curso</h3>
-            <p class="text-xs text-secondary mt-0.5">Calculado automáticamente · <span x-text="nowTime" class="font-medium text-primary mono"></span></p>
-          </div>
-          <span class="pill-green" x-text="liveFlights.length+' activos'"></span>
-        </div>
-        <div x-show="liveFlights.length===0" class="text-center py-8 text-secondary">
-          <div class="text-3xl mb-2">✈️</div>
-          <p class="text-sm">Sin vuelos en operación ahora.</p>
-          <p class="text-xs text-tertiary mt-1" x-show="flights.length===0">Carga un itinerario en la sección Vuelos.</p>
-        </div>
-        <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          <template x-for="f in liveFlights" :key="f.id">
-            <div class="card-sm p-4" style="border:1px solid var(--border)">
-              <div class="flex items-center justify-between mb-2">
-                <span class="font-bold text-primary text-base" x-text="f.airline+' '+f.flightNo"></span>
-                <span :class="getTypeColor(f.type)" x-text="f.type"></span>
-              </div>
-              <div class="flex items-center gap-3 text-sm text-secondary">
-                <span>🛬 <span class="mono font-medium text-primary" x-text="f.eta"></span></span>
-                <span>→</span>
-                <span>🛫 <span class="mono font-medium text-primary" x-text="f.etd"></span></span>
-              </div>
-              <div class="mt-2 text-xs text-secondary">
-                Personal: <span class="font-semibold text-primary" x-text="(airlineRules[f.airline]?.agentesRampa||7)+' rampa · '+(airlineRules[f.airline]?.receptores||2)+' rec · '+(airlineRules[f.airline]?.maleteros||3)+' mal'"></span>
-              </div>
-            </div>
-          </template>
-        </div>
-      </div>
- 
-      <!-- Alertas -->
-      <template x-if="scheduleGenerated">
-        <div class="space-y-2">
-          <template x-for="a in smartAlerts">
-            <div :class="a.type==='warning'?'alert-warning':'alert-success'" x-text="'⚡ '+a.message"></div>
-          </template>
-          <template x-if="overtimeAlerts.length>0">
-            <div class="alert-red cursor-pointer" @click="currentTab='horas_extras'">
-              🚨 Hay <strong x-text="overtimeAlerts.length"></strong> vuelo(s) con necesidad de horas extras. <span class="underline">Ver panel →</span>
-            </div>
-          </template>
-        </div>
-      </template>
- 
-      <div x-show="!scheduleGenerated" class="card p-8 text-center" style="border:2px dashed var(--border)">
-        <div class="text-4xl mb-3">📅</div>
-        <p class="text-secondary text-sm mb-3">Genera los turnos para ver el panel en vivo.</p>
-        <button @click="currentTab='generar_turnos'" class="btn-primary">Ir a Generar Turnos</button>
-      </div>
-    </div>
- 
-    <!-- ═══════ ITINERARIOS ═══════ -->
-    <div x-show="currentTab==='itinerarios'" class="space-y-5">
-      <div class="card p-4 flex flex-wrap gap-3 items-end justify-between">
-        <div class="flex flex-wrap gap-3">
-          <div>
-            <label class="text-xs font-600 text-secondary block mb-1.5">Aerolínea</label>
-            <select x-model="flightFilter" class="input-field w-36">
-              <option value="">Todas</option>
-              <template x-for="key in Object.keys(airlineRules)"><option :value="key" x-text="key"></option></template>
-            </select>
-          </div>
-          <div>
-            <label class="text-xs font-600 text-secondary block mb-1.5">Día</label>
-            <select x-model="flightDayFilter" class="input-field w-28">
-              <option value="">Todo el mes</option>
-              <template x-for="d in daysInMonth"><option :value="d" x-text="'Día '+d"></option></template>
-            </select>
-          </div>
-        </div>
-        <div class="flex gap-2 flex-wrap">
-          <button @click="addNewFlight()" class="btn-primary">+ Nuevo vuelo</button>
-          <label class="btn-outline cursor-pointer">📂 Subir Excel<input type="file" accept=".xlsx,.xls,.csv" class="hidden" @change="importExcelFile($event)"></label>
-        </div>
-      </div>
-      <div x-show="csvStatus" class="alert-success text-sm" x-text="csvStatus"></div>
-      <div class="card overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead><tr style="border-bottom:1px solid var(--border)">
-              <th class="text-left p-4 text-xs font-600 text-secondary uppercase">Aerolínea</th>
-              <th class="text-left p-4 text-xs font-600 text-secondary uppercase">Vuelo</th>
-              <th class="text-left p-4 text-xs font-600 text-secondary uppercase">Tipo</th>
-              <th class="text-center p-4 text-xs font-600 text-secondary uppercase">ETA</th>
-              <th class="text-center p-4 text-xs font-600 text-secondary uppercase">ETD</th>
-              <th class="text-left p-4 text-xs font-600 text-secondary uppercase mobile-hide">Días</th>
-              <th class="text-right p-4 text-xs font-600 text-secondary uppercase">Acciones</th>
-            </tr></thead>
-            <tbody>
-              <template x-for="f in getFilteredFlights()" :key="f.id">
-                <tr class="flight-row">
-                  <td class="p-4 font-bold text-primary" x-text="f.airline"></td>
-                  <td class="p-4 mono font-medium text-primary" x-text="f.flightNo"></td>
-                  <td class="p-4"><span :class="getTypeColor(f.type)" x-text="f.type"></span></td>
-                  <td class="p-4 text-center mono text-primary" x-text="f.eta"></td>
-                  <td class="p-4 text-center mono text-primary" x-text="f.etd"></td>
-                  <td class="p-4 mobile-hide">
-                    <template x-if="f.days.length>=28"><span class="pill-green">Diario</span></template>
-                    <template x-if="f.days.length<28"><div class="flex flex-wrap gap-1"><template x-for="d in f.days"><span class="pill-gray" x-text="d"></span></template></div></template>
-                  </td>
-                  <td class="p-4 text-right"><div class="flex gap-2 justify-end">
-                    <button @click="editFlight(f)" class="btn-edit">Editar</button>
-                    <button @click="deleteFlight(f.id)" class="btn-danger">Eliminar</button>
-                  </div></td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
- 
-    <!-- ═══════ PERSONAL ═══════ -->
-    <div x-show="currentTab==='personal'" class="space-y-5">
-      <div class="card p-4 flex flex-wrap gap-3 items-center justify-between">
-        <input type="text" x-model="staffFilter" placeholder="Buscar por nombre, ID o rol..." class="input-field max-w-xs">
-        <button @click="addNewStaff()" class="btn-primary">+ Registrar empleado</button>
-      </div>
-      <div class="card overflow-hidden">
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead><tr style="border-bottom:1px solid var(--border)">
-              <th class="text-left p-4 text-xs font-600 text-secondary uppercase">Nombre</th>
-              <th class="text-left p-4 text-xs font-600 text-secondary uppercase">Rol</th>
-              <th class="text-center p-4 text-xs font-600 text-secondary uppercase">Estado</th>
-              <th class="text-left p-4 text-xs font-600 text-secondary uppercase mobile-hide">Observación</th>
-              <th class="text-right p-4 text-xs font-600 text-secondary uppercase">Acciones</th>
-            </tr></thead>
-            <tbody>
-              <template x-for="emp in getFilteredStaff()" :key="emp.id">
-                <tr class="flight-row" :class="!emp.active&&'opacity-50'">
-                  <td class="p-4"><div class="font-semibold text-primary text-sm" x-text="emp.name"></div><div class="text-xs text-tertiary mono" x-text="emp.id"></div></td>
-                  <td class="p-4"><span :class="getRoleColor(emp.role)" x-text="emp.role"></span></td>
-                  <td class="p-4 text-center"><span x-show="emp.active" class="pill-green">Activo</span><span x-show="!emp.active" class="pill-red">Inactivo</span></td>
-                  <td class="p-4 text-xs text-secondary mobile-hide" x-text="emp.disableReason||'—'"></td>
-                  <td class="p-4"><div class="flex gap-2 justify-end flex-wrap">
-                    <button @click="editStaff(emp)" class="btn-edit">Editar</button>
-                    <button x-show="emp.active" @click="openDisableModal(emp)" class="btn-warn">Inhabilitar</button>
-                    <button x-show="!emp.active" @click="enableStaff(emp)" class="btn-edit">Habilitar</button>
-                    <button @click="deleteStaff(emp.id)" class="btn-danger">Eliminar</button>
-                  </div></td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
- 
-    <!-- ═══════ REGLAS ═══════ -->
-    <div x-show="currentTab==='reglas'" class="space-y-5">
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <div class="card p-6">
-          <h3 class="font-bold text-primary text-base mb-1">Reglas del Algoritmo</h3>
-          <p class="text-xs text-secondary mb-5">Modificar estos valores afecta el cálculo al siguiente "Generar Turnos".</p>
-          <div class="space-y-4">
-            <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Encargados por vuelo</label><input type="number" x-model.number="algorithmRules.encargadosPorVuelo" class="input-field"></div>
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Operadores por vuelo</label><input type="number" x-model.number="algorithmRules.operadoresPorVuelo" class="input-field"></div>
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Min. antes del vuelo</label><input type="number" x-model.number="algorithmRules.minutosAntesVuelo" class="input-field"></div>
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Máx. horas diarias</label><input type="number" x-model.number="algorithmRules.maxHorasDiarias" class="input-field"></div>
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Mín. horas por bloque</label><input type="number" x-model.number="algorithmRules.minHorasBloque" class="input-field"></div>
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Descanso partido mín. (min)</label><input type="number" x-model.number="algorithmRules.minDescansoPartido" class="input-field"></div>
-            </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Duración comida (min)</label><input type="number" x-model.number="algorithmRules.minutosComida" class="input-field"></div>
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Turno mín. para comida (min)</label><input type="number" x-model.number="algorithmRules.umbralComida" class="input-field"></div>
-            </div>
-            <div><label class="text-xs font-600 text-secondary block mb-1.5">Umbral agrupación vuelos (min)</label><input type="number" x-model.number="algorithmRules.umbralAgrupar" class="input-field"><p class="text-xs text-tertiary mt-1">Vuelos con menos de X minutos entre ellos se cubren con el mismo personal.</p></div>
-          </div>
-        </div>
-        <div class="card p-6">
-          <h3 class="font-bold text-primary text-base mb-1">Personal por Aerolínea</h3>
-          <p class="text-xs text-secondary mb-5">Requerimiento de personal por vuelo según aerolínea.</p>
-          <div class="space-y-3">
-            <template x-for="[key,val] in Object.entries(airlineRules)">
-              <div class="p-3 rounded-xl" style="border:1px solid var(--border);background:var(--surface2)">
-                <div class="font-semibold text-primary text-sm mb-3" x-text="val.name"></div>
-                <div class="grid grid-cols-3 gap-2">
-                  <div><label class="text-[10px] font-600 text-secondary uppercase block mb-1">Ag. Rampa</label><input type="number" x-model.number="val.agentesRampa" class="input-field text-sm py-1.5"></div>
-                  <div><label class="text-[10px] font-600 text-secondary uppercase block mb-1">Receptores</label><input type="number" x-model.number="val.receptores" class="input-field text-sm py-1.5"></div>
-                  <div><label class="text-[10px] font-600 text-secondary uppercase block mb-1">Maleteros</label><input type="number" x-model.number="val.maleteros" class="input-field text-sm py-1.5"></div>
-                </div>
-              </div>
-            </template>
-          </div>
-        </div>
-      </div>
-    </div>
- 
-    <!-- ═══════ GENERAR TURNOS ═══════ -->
-    <div x-show="currentTab==='generar_turnos'" class="space-y-5">
-      <div class="card p-6 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div>
-          <h2 class="text-xl font-bold text-primary">Generar Turnos</h2>
-          <p class="text-sm text-secondary mt-0.5" x-text="monthName+' '+selectedDay+', '+selectedYear"></p>
-        </div>
-        <div class="flex gap-2 flex-wrap">
-          <button @click="generateTurnos()" class="btn-primary" x-text="scheduleGenerated?'🔄 Recalcular':'🚀 Generar turnos'"></button>
-          <button x-show="scheduleGenerated" @click="exportRoster()" class="btn-outline text-sm">📥 Excel (día)</button>
-          <button x-show="scheduleGenerated" @click="exportMonthRoster()" class="btn-outline text-sm">📥 Excel (mes completo)</button>
-        </div>
-      </div>
- 
-      <div x-show="generationProgress!==null" class="card p-5">
-        <div class="flex justify-between mb-2">
-          <span class="text-sm font-medium text-secondary">Calculando...</span>
-          <span class="text-sm font-bold" style="color:#3DBF82" x-text="generationProgress+'%'"></span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" :style="`width:${generationProgress}%`"></div></div>
-      </div>
- 
-      <template x-if="scheduleGenerated">
-        <div class="space-y-2">
-          <template x-for="a in smartAlerts"><div :class="a.type==='warning'?'alert-warning':'alert-success'" x-text="'⚡ '+a.message"></div></template>
-        </div>
-      </template>
- 
-      <div x-show="scheduleGenerated" class="card overflow-hidden">
-        <div class="p-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between" style="border-bottom:1px solid var(--border)">
-          <div class="flex gap-1 p-1 rounded-lg" style="background:var(--surface2)">
-            <button @click="rosterViewMode='day';selectedEmp=null" :class="rosterViewMode==='day'?'nav-btn active':'nav-btn'" class="text-xs py-1.5 px-3">Por día</button>
-            <button @click="rosterViewMode='month';selectedEmp=null" :class="rosterViewMode==='month'?'nav-btn active':'nav-btn'" class="text-xs py-1.5 px-3">Por mes</button>
-            <button @click="rosterViewMode='employee'" :class="rosterViewMode==='employee'?'nav-btn active':'nav-btn'" class="text-xs py-1.5 px-3">Por empleado</button>
-          </div>
-          <input type="text" x-model="staffFilter" placeholder="Buscar empleado..." class="input-field w-full sm:w-56 text-sm">
-        </div>
- 
-        <!-- Vista día -->
-        <div x-show="rosterViewMode==='day'" class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead><tr style="border-bottom:1px solid var(--border)">
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase">Empleado</th>
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase mobile-hide">Rol</th>
-              <th class="text-center p-3 text-xs font-600 text-secondary uppercase">Estado</th>
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase">Turno</th>
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase mobile-hide">Comida</th>
-            </tr></thead>
-            <tbody>
-              <template x-for="emp in getFilteredStaff().filter(s=>s.role!=='Supervisor')" :key="emp.id">
-                <tr class="flight-row">
-                  <td class="p-3"><div class="font-semibold text-primary text-xs" x-text="emp.name"></div><div class="text-[10px] text-tertiary mono" x-text="emp.id"></div></td>
-                  <td class="p-3 mobile-hide"><span :class="getRoleColor(emp.role)" x-text="emp.role"></span></td>
-                  <td class="p-3 text-center"><span :class="getRosterStatus(emp.id,selectedDay).isDescanso?'pill-gray':'pill-green'" x-text="getRosterStatus(emp.id,selectedDay).isDescanso?'Libre':'Trabajando'"></span></td>
-                  <td class="p-3 text-xs mono text-primary" x-text="getRosterStatus(emp.id,selectedDay).blocks"></td>
-                  <td class="p-3 text-xs mono text-secondary mobile-hide" x-text="getRosterStatus(emp.id,selectedDay).meal||'—'"></td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
- 
-        <!-- Vista mes -->
-        <div x-show="rosterViewMode==='month'" class="overflow-x-auto">
-          <div class="p-3 text-xs text-secondary">T = Trabajando · L = Libre. El Excel mensual incluye el horario completo.</div>
-          <table class="w-full text-xs border-collapse">
-            <thead><tr style="border-bottom:1px solid var(--border)">
-              <th class="sticky-col text-left p-2 text-[10px] font-600 text-secondary uppercase min-w-[150px]" style="border-right:1px solid var(--border)">Empleado</th>
-              <template x-for="d in daysInMonth"><th class="p-1.5 text-[10px] font-600 text-secondary text-center min-w-[26px]" style="border-left:1px solid var(--border)" x-text="d"></th></template>
-            </tr></thead>
-            <tbody>
-              <template x-for="emp in getFilteredStaff().filter(s=>s.role!=='Supervisor')" :key="emp.id">
-                <tr class="flight-row">
-                  <td class="sticky-col p-2 font-semibold text-primary truncate max-w-[150px]" style="border-right:1px solid var(--border)">
-                    <div x-text="emp.name" class="truncate text-xs"></div>
-                    <div x-text="emp.role" class="text-[10px] text-secondary"></div>
-                  </td>
-                  <template x-for="d in daysInMonth">
-                    <td class="p-1 text-center" style="border-left:1px solid var(--border)">
-                      <span class="block rounded text-[9px] font-bold py-0.5"
-                        :class="(staff.indexOf(emp)+d)%7===0?'pill-gray':'pill-green'"
-                        x-text="(staff.indexOf(emp)+d)%7===0?'L':'T'"></span>
-                    </td>
-                  </template>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
- 
-        <!-- Vista por empleado -->
-        <div x-show="rosterViewMode==='employee'" class="p-4">
-          <div class="mb-4">
-            <label class="text-xs font-600 text-secondary block mb-1.5">Seleccionar empleado</label>
-            <select x-model="selectedEmp" class="input-field max-w-sm">
-              <option value="">-- Selecciona un empleado --</option>
-              <template x-for="emp in staff.filter(s=>s.role!=='Supervisor')" :key="emp.id">
-                <option :value="emp.id" x-text="emp.name+' ('+emp.role+')'"></option>
-              </template>
-            </select>
-          </div>
-          <template x-if="selectedEmp">
-            <div>
-              <div class="font-bold text-primary mb-3" x-text="staff.find(s=>s.id===selectedEmp)?.name"></div>
-              <div class="space-y-2">
-                <template x-for="row in getEmpMonthView(selectedEmp)" :key="row.day">
-                  <div class="flex gap-3 items-start p-3 rounded-xl" :class="row.isDescanso?'surface2':''" style="border:1px solid var(--border)">
-                    <div class="w-12 shrink-0 text-center">
-                      <div class="font-bold text-primary text-lg leading-none" x-text="row.day"></div>
-                      <div class="text-[10px] text-secondary" x-text="monthName"></div>
-                    </div>
-                    <div class="flex-1">
-                      <template x-if="row.isDescanso">
-                        <span class="pill-gray">Libre / Descanso</span>
-                      </template>
-                      <template x-if="!row.isDescanso">
-                        <div>
-                          <div class="text-xs mono text-primary leading-relaxed" x-text="row.blocks"></div>
-                          <div x-show="row.meal&&row.meal!=='-'" class="text-[10px] text-secondary mt-1">🍽️ Comida: <span class="mono" x-text="row.meal"></span></div>
-                        </div>
-                      </template>
-                    </div>
-                  </div>
-                </template>
-              </div>
-            </div>
-          </template>
-        </div>
-      </div>
- 
-      <div x-show="!scheduleGenerated" class="card p-10 text-center" style="border:2px dashed var(--border)">
-        <div class="text-4xl mb-3">📅</div>
-        <p class="text-secondary text-sm">Presiona "Generar turnos" para calcular el horario.</p>
-      </div>
-    </div>
- 
-    <!-- ═══════ HORAS EXTRAS ═══════ -->
-    <div x-show="currentTab==='horas_extras'" class="space-y-5">
-      <div class="card p-6">
-        <h2 class="text-xl font-bold text-primary mb-1">Horas Extras</h2>
-        <p class="text-sm text-secondary">Vuelos con déficit de personal. Asigna manualmente quién cubre cada posición faltante.</p>
-      </div>
- 
-      <div x-show="!scheduleGenerated" class="card p-8 text-center" style="border:2px dashed var(--border)">
-        <p class="text-secondary text-sm">Genera los turnos primero para ver las horas extras necesarias.</p>
-      </div>
- 
-      <div x-show="scheduleGenerated && overtimeAlerts.length===0" class="alert-success">
-        ✅ No se necesitan horas extras para <span x-text="monthName"></span>. La plantilla cubre toda la operación del mes.
-      </div>
- 
-      <!-- Lista de déficits por vuelo/día -->
-      <div x-show="scheduleGenerated && overtimeAlerts.length>0" class="space-y-3">
-        <template x-for="alert in overtimeAlerts" :key="alert.id">
-          <div class="card p-5" style="border-left:4px solid #EF4444">
-            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div class="flex-1">
-                <div class="flex items-center gap-2 mb-2 flex-wrap">
-                  <span class="font-bold text-primary text-base" x-text="'Día '+alert.day+' · '+alert.label"></span>
-                  <span class="extras-badge" x-text="'+'+alert.faltantes+' personas'"></span>
-                  <span class="pill-red text-xs" x-text="alert.rol"></span>
-                </div>
-                <div class="text-xs text-secondary mono" x-text="toHHMM(alert.start)+' - '+toHHMM(alert.end)"></div>
-                <template x-if="alert.assignedEmps && alert.assignedEmps.length>0">
-                  <div class="mt-2 space-y-0.5">
-                    <template x-for="emp in alert.assignedEmps" :key="emp">
-                      <div class="text-xs" style="color:#3DBF82">✅ <span x-text="emp"></span></div>
-                    </template>
-                  </div>
-                </template>
-              </div>
-              <button @click="openExtrasModal(alert)" class="btn-primary text-sm shrink-0"
-                x-text="(alert.assignedEmps&&alert.assignedEmps.length>0)?'Modificar asignación':'Asignar empleado(s)'"></button>
-            </div>
-          </div>
-        </template>
-      </div>
- 
-      <!-- Resumen mensual horas extras -->
-      <div x-show="scheduleGenerated && overtimeSummary.length>0" class="card overflow-hidden">
-        <div class="p-4" style="border-bottom:1px solid var(--border)">
-          <h3 class="font-bold text-primary">Resumen mensual de horas extras</h3>
-          <p class="text-xs text-secondary mt-0.5">Total acumulado por empleado en <span x-text="monthName"></span></p>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead><tr style="border-bottom:1px solid var(--border)">
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase">Empleado</th>
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase mobile-hide">Vuelos cubiertos</th>
-              <th class="text-right p-3 text-xs font-600 text-secondary uppercase">Total horas extras</th>
-            </tr></thead>
-            <tbody>
-              <template x-for="row in overtimeSummary" :key="row.name">
-                <tr class="flight-row">
-                  <td class="p-3 font-semibold text-primary text-sm" x-text="row.name"></td>
-                  <td class="p-3 text-xs text-secondary mobile-hide" x-text="row.slots.map(s=>'Día '+s.day+' '+s.label).join(', ')"></td>
-                  <td class="p-3 text-right">
-                    <span class="extras-badge" x-text="Math.floor(row.totalMins/60)+'h '+( row.totalMins%60)+'min'"></span>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
- 
-  </main>
-</div>
- 
-<!-- ══════════════════════════════════════════
-     MODALES
-══════════════════════════════════════════ -->
- 
-<!-- Modal: Editar vuelo -->
-<div x-show="editingFlight" class="modal-overlay" style="display:none">
-  <div class="modal-box" @click.away="editingFlight=null">
-    <h3 class="font-bold text-primary text-lg mb-5" x-text="editingFlight?.id==='new'?'Nuevo vuelo':'Editar vuelo'"></h3>
-    <div class="space-y-3" x-if="editingFlight">
-      <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs font-600 text-secondary block mb-1.5">Aerolínea</label><input type="text" x-model="editingFlight.airline" class="input-field"></div>
-        <div><label class="text-xs font-600 text-secondary block mb-1.5">Nº vuelo</label><input type="text" x-model="editingFlight.flightNo" class="input-field"></div>
-      </div>
-      <div><label class="text-xs font-600 text-secondary block mb-1.5">Tipo</label>
-        <select x-model="editingFlight.type" class="input-field"><option value="TURN">TURN</option><option value="DESPACHO">DESPACHO</option><option value="RECEPCION">RECEPCION</option></select>
-      </div>
-      <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs font-600 text-secondary block mb-1.5">ETA</label><input type="time" x-model="editingFlight.eta" class="input-field"></div>
-        <div><label class="text-xs font-600 text-secondary block mb-1.5">ETD</label><input type="time" x-model="editingFlight.etd" class="input-field"></div>
-      </div>
-      <div><label class="text-xs font-600 text-secondary block mb-1.5">Días (separados por coma)</label>
-        <input type="text" :value="editingFlight.days.join(', ')" @input="editingFlight.days=$event.target.value.split(',').map(n=>parseInt(n.trim())).filter(n=>!isNaN(n))" class="input-field" placeholder="1, 2, 3, ...">
-      </div>
-    </div>
-    <div class="flex justify-end gap-2 mt-6">
-      <button @click="editingFlight=null" class="btn-outline">Cancelar</button>
-      <button @click="saveFlight()" class="btn-primary">Guardar</button>
-    </div>
-  </div>
-</div>
- 
-<!-- Modal: Editar personal -->
-<div x-show="editingStaff" class="modal-overlay" style="display:none">
-  <div class="modal-box" @click.away="editingStaff=null">
-    <h3 class="font-bold text-primary text-lg mb-5" x-text="editingStaff?.id==='new'?'Registrar empleado':'Editar empleado'"></h3>
-    <div class="space-y-3" x-if="editingStaff">
-      <div><label class="text-xs font-600 text-secondary block mb-1.5">Nombre completo</label><input type="text" x-model="editingStaff.name" class="input-field" placeholder="NOMBRE APELLIDO"></div>
-      <div><label class="text-xs font-600 text-secondary block mb-1.5">Puesto</label>
-        <select x-model="editingStaff.role" class="input-field">
-          <option value="Operativo">Agente de Rampa</option>
-          <option value="Operador">Operador</option>
-          <option value="Encargado">Encargado de Vuelo</option>
-          <option value="Supervisor">Supervisor</option>
-        </select>
-      </div>
-    </div>
-    <div class="flex justify-end gap-2 mt-6">
-      <button @click="editingStaff=null" class="btn-outline">Cancelar</button>
-      <button @click="saveStaff()" class="btn-primary">Guardar</button>
-    </div>
-  </div>
-</div>
- 
-<!-- Modal: Inhabilitar -->
-<div x-show="disableModalOpen" class="modal-overlay" style="display:none">
-  <div class="modal-box" style="border:2px solid #FCA5A5" @click.away="disableModalOpen=false">
-    <h3 class="font-bold text-lg mb-2" style="color:#EF4444">Inhabilitar empleado</h3>
-    <p class="text-sm text-secondary mb-4">Motivo de inactivación de <span class="font-semibold text-primary" x-text="selectedStaffToDisable?.name"></span>:</p>
-    <textarea x-model="disableReason" class="input-field resize-none" rows="3" placeholder="Ej: Vacaciones, suspensión IGSS, despido..."></textarea>
-    <div class="flex justify-end gap-2 mt-5">
-      <button @click="disableModalOpen=false" class="btn-outline">Cancelar</button>
-      <button @click="confirmDisable()" class="btn-danger px-5 py-2.5 text-sm font-semibold">Inhabilitar</button>
-    </div>
-  </div>
-</div>
- 
-<!-- Modal: Asignar hora extra -->
-<div x-show="extrasModalOpen" class="modal-overlay" style="display:none">
-  <div class="modal-box" style="max-width:520px" @click.away="extrasModalOpen=false">
-    <h3 class="font-bold text-primary text-lg mb-1">Asignar hora extra</h3>
-    <template x-if="selectedExtraSlot">
-      <div class="mb-4 p-3 rounded-xl" style="background:var(--surface2)">
-        <div class="font-bold text-primary" x-text="'Día '+selectedExtraSlot.day+' · '+selectedExtraSlot.label"></div>
-        <div class="text-sm text-secondary" x-text="selectedExtraSlot.rol"></div>
-        <div class="text-xs mono text-secondary" x-text="toHHMM(selectedExtraSlot.start)+' - '+toHHMM(selectedExtraSlot.end)+' ('+Math.floor((selectedExtraSlot.end-selectedExtraSlot.start)/60)+'h '+((selectedExtraSlot.end-selectedExtraSlot.start)%60)+'min)'"></div>
-        <div class="mt-2">
-          <span class="extras-badge" x-text="'Faltan '+selectedExtraSlot.faltantes+' personas'"></span>
-          <span class="text-xs text-secondary ml-2" x-text="'Seleccionados: '+extrasAssignEmps.length+'/'+selectedExtraSlot.faltantes"></span>
-        </div>
-      </div>
-    </template>
-    <div>
-      <label class="text-xs font-600 text-secondary block mb-2">Selecciona empleado(s) para cubrir — filtra por rol recomendado</label>
-      <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
-        <template x-for="emp in staff.filter(s=>s.active&&s.role!=='Supervisor')" :key="emp.id">
-          <div @click="toggleExtraEmp(emp.name)" class="flex items-center gap-3 p-2 rounded-lg cursor-pointer transition"
-            :class="extrasAssignEmps.includes(emp.name)?'':'hover:bg-[var(--surface2)]'"
-            :style="extrasAssignEmps.includes(emp.name)?'background:var(--green-light);border:1.5px solid #A7F3D0':'border:1.5px solid transparent'">
-            <div class="w-5 h-5 rounded flex items-center justify-center shrink-0" :style="extrasAssignEmps.includes(emp.name)?'background:#3DBF82':'border:2px solid var(--border)'">
-              <span x-show="extrasAssignEmps.includes(emp.name)" class="text-white text-xs font-bold">✓</span>
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="text-sm font-medium text-primary truncate" x-text="emp.name"></div>
-            </div>
-            <span :class="getRoleColor(emp.role)" x-text="emp.role"></span>
-          </div>
-        </template>
-      </div>
-    </div>
-    <div class="flex justify-end gap-2 mt-6">
-      <button @click="extrasModalOpen=false" class="btn-outline">Cancelar</button>
-      <button @click="saveExtraAssignment()" class="btn-primary">Confirmar asignación</button>
-    </div>
-  </div>
-</div>
- 
-</body>
-</html>

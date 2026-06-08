@@ -431,135 +431,133 @@
         go();
       },
 
-
-      buildRealRoster(){
-    this.currentRoster={};
-    this.extraShifts=this.extraShifts||{};
-    this.overtimeAlerts=[];
-    this.overtimeSummary=[];
-    const DIAS=new Date(this.selectedYear,this.selectedMonth,0).getDate();
-    const MAX_MINS = this.algorithmRules.maxHorasDiarias * 60; // 600 mins (10 horas)
-
-    // ── 1. CÁLCULO DE DEMANDA REAL POR DÍA (Para descansos dinámicos) ──
+buildRealRoster() {
+    this.currentRoster = {};
+    this.extraShifts = this.extraShifts || {};
+    this.overtimeAlerts = [];
+    this.overtimeSummary = [];
+    const R = this.algorithmRules;
+    const MAX_MINS = R.maxHorasDiarias * 60;
+    const MIN_PARTIDO = R.minDescansoPartido;
+    const MINS_ANTES = R.minutosAntesVuelo;
+    const DIAS = new Date(this.selectedYear, this.selectedMonth, 0).getDate();
+    
+    // ── PASO 1: CALCULAR DEMANDA REAL POR DÍA ──
     const dailyDemand = {};
-    for(let day=1; day<=DIAS; day++){
+    for (let day = 1; day <= DIAS; day++) {
         let demand = 0;
-        this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
-            const isAA = f.airline === 'AA';
-            demand += (isAA ? 4 : 2); // Receptores
-            demand += 1; // Encargado
-            demand += 1; // Operador
-            demand += (f.type === 'DESPACHO' ? 7 : 10); // Agentes/Maleteros
+        this.flights.filter(f => f.active && f.days.includes(day)).forEach(f => {
+            const rules = this.airlineRules[f.airline] || { agentesRampa: 7, receptores: 2, maleteros: 3 };
+            demand += (rules.receptores || 2);
+            demand += (R.encargadosPorVuelo || 1);
+            demand += (R.operadoresPorVuelo || 1);
+            demand += (rules.agentesRampa || 7);
         });
         dailyDemand[day] = demand;
     }
 
-    // ── 2. DÍAS LIBRES DINÁMICOS (Basados en demanda) ──
-    const buildFreeSchedule=(poolSize)=>{
-        const schedule={};
-        for(let i=0;i<poolSize;i++) schedule[i]=new Set();
-        if(poolSize===0) return schedule;
-        let d=1;
-        while(d<=DIAS){
-            const weekEnd=Math.min(d+6,DIAS);
-            const week=[];
-            for(let x=d;x<=weekEnd;x++) week.push(x);
-            const wLen=week.length;
+    // ── PASO 2: DISTRIBUCIÓN DINÁMICA DE DESCANSOS ──
+    const buildFreeSchedule = (poolSize) => {
+        const schedule = {};
+        for (let i = 0; i < poolSize; i++) schedule[i] = new Set();
+        if (poolSize === 0) return schedule;
+        
+        // Ordenar días por demanda (menos demanda = más prioridad para descansos)
+        const daysByDemand = [...Array(DIAS).keys()].map(i => i + 1)
+            .sort((a, b) => dailyDemand[a] - dailyDemand[b]);
+        
+        let d = 0;
+        while (d < daysByDemand.length) {
+            const weekEnd = Math.min(d + 6, daysByDemand.length);
+            const week = daysByDemand.slice(d, weekEnd);
+            const wLen = week.length;
+            const freeDayCount = new Array(wLen).fill(0);
             
-            // NUEVO: Ordenar días de la semana por demanda (menor demanda = primero en recibir libres)
-            const weekDaysSorted = [...week].sort((a, b) => (dailyDemand[a] || 0) - (dailyDemand[b] || 0));
-            const freeDayCount=new Array(wLen).fill(0);
-            
-            for(let i=0;i<poolSize;i++){
-                const availableDays = weekDaysSorted.map((day, idx) => ({
-                    day: day, idx: idx,
-                    score: (dailyDemand[day] || 0) + (freeDayCount[idx] * 1000) // Penalización si ya hay muchos libres
-                })).sort((a,b) => a.score - b.score);
-
-                const p1 = availableDays[0];
-                freeDayCount[p1.idx]++;
-                schedule[i].add(p1.day);
-
-                const availableDays2 = availableDays.filter(x => x.idx !== p1.idx);
-                const p2 = availableDays2[0];
-                freeDayCount[p2.idx]++;
-                schedule[i].add(p2.day);
+            for (let i = 0; i < poolSize; i++) {
+                // Priorizar días con menor demanda
+                const sorted = [...week.keys()].sort((a, b) => freeDayCount[a] - freeDayCount[b]);
+                const p1 = sorted[0]; freeDayCount[p1]++;
+                const sorted2 = [...week.keys()].filter(x => x !== p1).sort((a, b) => freeDayCount[a] - freeDayCount[b]);
+                const p2 = sorted2[0]; freeDayCount[p2]++;
+                schedule[i].add(week[p1]);
+                schedule[i].add(week[p2]);
             }
-            d=weekEnd+1;
+            d = weekEnd;
         }
         return schedule;
     };
 
-    // ── 3. GENERAR SLOTS ESTRICTOS (Lead Times Reales) ──
-    const generateFlightSlots = (day) => {
-        const slots = { receptores: [], encargados: [], operadores: [], agentes: [] };
+    // ── PASO 3: DETERMINAR VENTANAS DE 10 HORAS ──
+    const assignShifts = (empPool, freeSchedule, day, empMonthState) => {
+        const slots = [];
         this.flights.filter(f => f.active && f.days.includes(day)).forEach(f => {
             const eta = this.toMins(f.eta);
             const etd = this.toMins(f.etd);
-            const isAA = f.airline === 'AA';
+            const rules = this.airlineRules[f.airline] || { agentesRampa: 7, receptores: 2, maleteros: 3 };
             
-            // Receptores: 2h antes (120m). 4 si es AA, 2 si no.
-            const recCount = isAA ? 4 : 2;
-            for(let i=0; i<recCount; i++) slots.receptores.push({ start: eta - 120, end: etd, label: `${f.airline} ${f.flightNo} (Rec)`, flightId: f.id, day });
+            // Receptores (2 horas antes)
+            const recCount = f.airline === 'AA' ? 4 : 2;
+            for (let i = 0; i < recCount; i++) {
+                slots.push({ start: eta - 120, end: etd, label: `${f.airline} ${f.flightNo} (Rec)`, role: 'receptor' });
+            }
             
-            // Encargados: 30m antes
-            slots.encargados.push({ start: eta - 30, end: etd, label: `${f.airline} ${f.flightNo} (Enc)`, flightId: f.id, day });
+            // Encargados y Operadores (30 minutos antes)
+            slots.push({ start: eta - 30, end: etd, label: `${f.airline} ${f.flightNo} (Enc)`, role: 'encargado' });
+            slots.push({ start: eta - 30, end: etd, label: `${f.airline} ${f.flightNo} (Op)`, role: 'operador' });
             
-            // Operadores: 30m antes
-            slots.operadores.push({ start: eta - 30, end: etd, label: `${f.airline} ${f.flightNo} (Op)`, flightId: f.id, day });
-            
-            // Agentes/Maleteros: 15m antes. 7 en Despacho, 10 en Turn/Recepcion
-            let agentCount = (f.type === 'DESPACHO') ? 7 : 10; 
-            for(let i=0; i<agentCount; i++) slots.agentes.push({ start: eta - 15, end: etd, label: `${f.airline} ${f.flightNo} (Ag/Mal)`, flightId: f.id, day });
+            // Agentes/Maleteros (15 minutos antes)
+            const agentCount = f.type === 'DESPACHO' ? 7 : 10;
+            for (let i = 0; i < agentCount; i++) {
+                slots.push({ start: eta - 15, end: etd, label: `${f.airline} ${f.flightNo} (Ag/Mal)`, role: 'agente' });
+            }
         });
+
+        // Agrupar vuelos en ventanas de 10 horas
+        slots.sort((a, b) => a.start - b.start);
+        const shiftWindows = [];
         
-        // Normalizar cruces de medianoche
-        const normalize = (arr) => arr.map(s => {
-            let start = s.start < 0 ? s.start + 1440 : s.start;
-            let end = s.end < start ? s.end + 1440 : s.end;
-            return { ...s, start, end, dur: end - start };
-        }).sort((a,b) => a.start - b.start);
-
-        return {
-            receptores: normalize(slots.receptores),
-            encargados: normalize(slots.encargados),
-            operadores: normalize(slots.operadores),
-            agentes: normalize(slots.agentes)
-        };
-    };
-
-    // ── 4. ASIGNACIÓN CON VENTANA DE 10 HORAS (EFECTO CASCADA) ──
-    const assignSlotsToPool = (pool, freeSchedule, slots, monthState, rolLabel) => {
-        const deficits = [];
         for (const slot of slots) {
+            let foundWindow = false;
+            for (const window of shiftWindows) {
+                // Si el vuelo cabe en la ventana existente
+                if (slot.start >= window.start && slot.end <= window.end) {
+                    window.slots.push(slot);
+                    foundWindow = true;
+                    break;
+                }
+            }
+            
+            // Crear nueva ventana si no cabe en ninguna existente
+            if (!foundWindow) {
+                shiftWindows.push({
+                    start: slot.start,
+                    end: slot.start + MAX_MINS,
+                    slots: [slot]
+                });
+            }
+        }
+
+        // ── PASO 4: ASIGNAR VENTANAS A EMPLEADOS ──
+        const deficits = [];
+        for (const window of shiftWindows) {
+            // Buscar el mejor empleado para esta ventana
             let bestIdx = -1;
             let bestScore = Infinity;
             
-            for (let i = 0; i < pool.length; i++) {
-                if (freeSchedule[i].has(slot.day)) continue; // Está de descanso
-                const empId = pool[i].id;
-                if (!monthState[empId].days[slot.day]) monthState[empId].days[slot.day] = { total: 0, shiftStart: null, shiftEnd: null, blocks: [] };
-                const d = monthState[empId].days[slot.day];
-                
-                // 1. No superar las 10 horas diarias sumando este slot
-                if (d.total + slot.dur > MAX_MINS) continue;
-                
-                // 2. Regla de la Ventana de 10 Horas (Efecto Cascada)
-                if (d.shiftStart !== null) {
-                    let windowEnd = d.shiftStart + MAX_MINS;
-                    if (slot.start < d.shiftStart || slot.end > windowEnd) continue; 
+            for (let i = 0; i < empPool.length; i++) {
+                if (freeSchedule[i].has(day)) continue;
+                const empId = empPool[i].id;
+                if (!empMonthState[empId].days[day]) {
+                    empMonthState[empId].days[day] = { total: 0, blocks: [], shiftStart: null, shiftEnd: null };
                 }
+                const d = empMonthState[empId].days[day];
                 
-                // 3. Evitar solapamientos físicos de vuelos
-                let overlaps = false;
-                for (const b of d.blocks) {
-                    if (Math.max(slot.start, b.start) < Math.min(slot.end, b.end)) { overlaps = true; break; }
-                }
-                if (overlaps) continue;
+                // 1. No superar 10 horas
+                if (d.total + (window.end - window.start) > MAX_MINS) continue;
                 
-                // Puntuación: Preferir empleados que YA tienen un turno abierto que encaje
+                // 2. Priorizar empleados que ya tengan un turno abierto
                 let score = d.total;
-                if (d.shiftStart !== null) score -= 1000; 
+                if (d.shiftStart !== null) score -= 1000;
                 
                 if (score < bestScore) {
                     bestScore = score;
@@ -568,108 +566,153 @@
             }
             
             if (bestIdx > -1) {
-                const empId = pool[bestIdx].id;
-                const d = monthState[empId].days[slot.day];
-                d.blocks.push({ start: slot.start, end: slot.end, label: slot.label });
-                d.total += slot.dur;
-                if (d.shiftStart === null || slot.start < d.shiftStart) d.shiftStart = slot.start;
-                if (d.shiftEnd === null || slot.end > d.shiftEnd) d.shiftEnd = slot.end;
+                const empId = empPool[bestIdx].id;
+                const d = empMonthState[empId].days[day];
+                d.blocks = window.slots.map(s => ({
+                    start: s.start,
+                    end: s.end,
+                    label: s.label
+                }));
+                d.shiftStart = window.start;
+                d.shiftEnd = window.end;
+                d.total = window.end - window.start;
             } else {
-                deficits.push({ ...slot, rol: rolLabel });
+                deficits.push(...window.slots);
             }
         }
         return deficits;
     };
 
-    // ── 5. EJECUCIÓN DEL MES ──
-    const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
-    const encargados=this.staff.filter(s=>s.role==='Encargado'&&s.active);
-    const operadores=this.staff.filter(s=>s.role==='Operador'&&s.active);
+    // ── PASO 5: EJECUCIÓN ──
+    const rampas = this.staff.filter(s => s.role === 'Operativo' && s.active);
+    const encargados = this.staff.filter(s => s.role === 'Encargado' && s.active);
+    const operadores = this.staff.filter(s => s.role === 'Operador' && s.active);
     
-    const rampaFree=buildFreeSchedule(rampas.length);
-    const encFree=buildFreeSchedule(encargados.length);
-    const opeFree=buildFreeSchedule(operadores.length);
+    const rampaFree = buildFreeSchedule(rampas.length);
+    const encFree = buildFreeSchedule(encargados.length);
+    const opeFree = buildFreeSchedule(operadores.length);
     
-    const rampaState=Object.fromEntries(rampas.map(e=>[e.id,{days:{}}]));
-    const encState=Object.fromEntries(encargados.map(e=>[e.id,{days:{}}]));
-    const opeState=Object.fromEntries(operadores.map(e=>[e.id,{days:{}}]));
+    const rampaState = Object.fromEntries(rampas.map(e => [e.id, { days: {} }]));
+    const encState = Object.fromEntries(encargados.map(e => [e.id, { days: {} }]));
+    const opeState = Object.fromEntries(operadores.map(e => [e.id, { days: {} }]));
     
-    const allDeficits=[];
+    const allDeficits = [];
 
-    for(let day=1;day<=DIAS;day++){
-        if(!this.flights.some(f=>f.active&&f.days.includes(day))) continue;
-        const daySlots = generateFlightSlots(day);
+    // Procesar cada día del mes
+    for (let day = 1; day <= DIAS; day++) {
+        if (!this.flights.some(f => f.active && f.days.includes(day))) continue;
         
-        allDeficits.push(...assignSlotsToPool(rampas, rampaFree, daySlots.receptores, rampaState, 'Receptor'));
-        allDeficits.push(...assignSlotsToPool(rampas, rampaFree, daySlots.agentes, rampaState, 'Agente/Maletero'));
-        allDeficits.push(...assignSlotsToPool(encargados, encFree, daySlots.encargados, encState, 'Encargado de Vuelo'));
-        allDeficits.push(...assignSlotsToPool(operadores, opeFree, daySlots.operadores, opeState, 'Operador'));
+        // Asignar ventanas para cada rol
+        allDeficits.push(...assignShifts(rampas, rampaFree, day, rampaState));
+        allDeficits.push(...assignShifts(encargados, encFree, day, encState));
+        allDeficits.push(...assignShifts(operadores, opeFree, day, opeState));
     }
 
-    // ── 6. CONSTRUIR ROSTER (Con comidas automáticas) ──
-    const buildRosterFromState=(pool,freeSchedule,monthState)=>{
-        pool.forEach((emp,i)=>{
-            const empEntry={};
-            for(let day=1;day<=DIAS;day++){
-                const isFree=freeSchedule[i].has(day);
-                const dayData=monthState[emp.id].days[day];
-                if(isFree||!dayData||dayData.blocks.length===0){
-                    empEntry[day]={isDescanso:true,blocks:'-',meal:'-'};
-                }else{
-                    const blocks = dayData.blocks.sort((a,b)=>a.start-b.start);
-                    let blockStr = blocks.map(b => `${this.toHHMM(b.start)} - ${this.toHHMM(b.end)} [${b.label}]`).join(' | ');
+    // ── PASO 6: CONSTRUIR ROSTER ──
+    const buildRosterFromState = (pool, freeSchedule, monthState) => {
+        pool.forEach((emp, i) => {
+            const empEntry = {};
+            for (let day = 1; day <= DIAS; day++) {
+                const isFree = freeSchedule[i].has(day);
+                const dayData = monthState[emp.id].days[day];
+                
+                if (isFree || !dayData || dayData.blocks.length === 0) {
+                    empEntry[day] = { isDescanso: true, blocks: '-', meal: '-' };
+                } else {
+                    // Calcular bloque total (con posibles turnos partidos)
+                    let blockStr = '';
+                    const blocks = dayData.blocks.sort((a, b) => a.start - b.start);
                     
-                    let meal='-';
-                    const totalShiftDur = dayData.shiftEnd - dayData.shiftStart;
-                    if(totalShiftDur >= 300){ // 5 horas o más
-                        const mid = dayData.shiftStart + Math.floor(totalShiftDur / 2);
-                        meal=`${this.toHHMM(mid)} - ${this.toHHMM(mid+45)}`;
+                    // Detectar si hay turnos partidos
+                    const segments = [];
+                    let seg = { start: blocks[0].start, end: blocks[0].end, labels: [blocks[0].label] };
+                    
+                    for (let k = 1; k < blocks.length; k++) {
+                        const gap = blocks[k].start - seg.end;
+                        if (gap <= 30) {
+                            seg.end = blocks[k].end;
+                            seg.labels.push(blocks[k].label);
+                        } else {
+                            segments.push(seg);
+                            seg = { start: blocks[k].start, end: blocks[k].end, labels: [blocks[k].label] };
+                        }
                     }
-                    empEntry[day]={isDescanso:false, blocks:blockStr, meal};
+                    segments.push(seg);
+                    
+                    blockStr = segments.map((s, idx) => {
+                        const dur = s.end - s.start;
+                        const mealNote = dur >= R.umbralComida ? ` (+comida)` : '';
+                        const prefix = segments.length > 1 ? `Turno ${idx + 1}: ` : '';
+                        return `${prefix}${this.toHHMM(s.start)} - ${this.toHHMM(s.end)}${mealNote}`;
+                    }).join(' / ');
+                    
+                    // Calcular comida
+                    let meal = '-';
+                    if (segments.length === 1 && (segments[0].end - segments[0].start) >= R.umbralComida) {
+                        const mid = segments[0].start + Math.floor((segments[0].end - segments[0].start) / 2);
+                        meal = `${this.toHHMM(mid)} - ${this.toHHMM(mid + R.minutosComida)}`;
+                    }
+                    
+                    empEntry[day] = { isDescanso: false, blocks: blockStr, meal };
                 }
             }
-            this.currentRoster[emp.id]=empEntry;
+            this.currentRoster[emp.id] = empEntry;
         });
     };
 
-    buildRosterFromState(rampas,rampaFree,rampaState);
-    buildRosterFromState(encargados,encFree,encState);
-    buildRosterFromState(operadores,opeFree,opeState);
+    buildRosterFromState(rampas, rampaFree, rampaState);
+    buildRosterFromState(encargados, encFree, encState);
+    buildRosterFromState(operadores, opeFree, opeState);
     
-    this.staff.filter(s=>s.role==='Supervisor').forEach(emp=>{
-        const entry={};
-        for(let day=1;day<=DIAS;day++) entry[day]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
-        this.currentRoster[emp.id]=entry;
+    // Supervisores
+    this.staff.filter(s => s.role === 'Supervisor').forEach(emp => {
+        const entry = {};
+        for (let day = 1; day <= DIAS; day++)
+            entry[day] = { isDescanso: false, blocks: 'Supervisión general', meal: '-' };
+        this.currentRoster[emp.id] = entry;
     });
 
-    // ── 7. DÉFICITS Y MÉTRICAS (Inyecta a Horas Extras) ──
-    const defMap={};
-    allDeficits.forEach(d=>{
-        const key=`${d.day}-${d.flightId}-${d.rol}`;
-        if(!defMap[key]) defMap[key]={...d,faltantes:0};
+    // ── PASO 7: ALERTAS DE DÉFICIT ──
+    const defMap = {};
+    allDeficits.forEach(d => {
+        const key = `${d.day}-${d.flightId}-${d.rol}`;
+        if (!defMap[key]) defMap[key] = { ...d, faltantes: 0 };
         defMap[key].faltantes++;
     });
     
-    this.overtimeAlerts=Object.values(defMap).map(d=>({
-        id:`OT-${d.day}-${d.flightId}-${d.rol.replace(/\s/g,'')}`,
-        day:d.day,label:d.label,rol:d.rol,
-        start:d.start,end:d.end,faltantes:d.faltantes,
-        assignedEmps:this.extraShifts[`OT-${d.day}-${d.flightId}-${d.rol.replace(/\s/g,'')}`]||[],
-    })).sort((a,b)=>a.day-b.day||a.start-b.start);
+    this.overtimeAlerts = Object.values(defMap).map(d => ({
+        id: `OT-${d.day}-${d.flightId}-${d.rol.replace(/\s/g, '')}`,
+        day: d.day, label: d.label, rol: d.rol,
+        start: d.start, end: d.end, faltantes: d.faltantes,
+        assignedEmps: this.extraShifts[`OT-${d.day}-${d.flightId}-${d.rol.replace(/\s/g, '')}`] || [],
+    })).sort((a, b) => a.day - b.day || a.start - b.start);
     
     this.buildOvertimeSummary();
     
-    const totalCovered = [rampaState,encState,opeState].reduce((sum,st)=> sum+Object.values(st).reduce((s,e)=> s+Object.values(e.days).reduce((ss,d)=>ss+d.blocks.length,0),0),0);
-    const totalNeeded = totalCovered + allDeficits.length;
-    const pct = totalNeeded>0 ? Math.round((totalCovered/totalNeeded)*100) : 100;
-    this.coverageMetrics={percent:pct,deficientHours:allDeficits.length,hoursIdle:0};
+    // ── PASO 8: MÉTRICAS ──
+    const totalCovered = [rampaState, encState, opeState].reduce((sum, st) => 
+        sum + Object.values(st).reduce((s, e) => 
+            s + Object.values(e.days).reduce((ss, d) => ss + d.blocks.length, 0), 0), 0);
     
-    if(allDeficits.length>0){
-        this.smartAlerts=[{type:'warning', message:`⚠️ Faltan ${allDeficits.length} asignaciones por límite de 10h o descansos. Revisa la sección de Horas Extras.`}];
-    }else{
-        this.smartAlerts=[{type:'success', message:`Cobertura completa (100%) para todo ${this.monthName}. Sin horas extras requeridas.`}];
+    const totalNeeded = totalCovered + allDeficits.length;
+    const pct = totalNeeded > 0 ? Math.round((totalCovered / totalNeeded) * 100) : 100;
+    this.coverageMetrics = { percent: pct, deficientHours: allDeficits.length, hoursIdle: 0 };
+    
+    if (allDeficits.length > 0) {
+        const porRol = {};
+        allDeficits.forEach(d => { porRol[d.rol] = (porRol[d.rol] || 0) + 1; });
+        const resumen = Object.entries(porRol).map(([r, n]) => `${n} ${r}`).join(', ');
+        this.smartAlerts = [{ 
+            type: 'warning',
+            message: `Faltan ${allDeficits.length} asignaciones en el mes: ${resumen}. Ver Horas Extras.`
+        }];
+    } else {
+        this.smartAlerts = [{ 
+            type: 'success',
+            message: `Cobertura completa (100%) para todo ${this.monthName}. Sin horas extras requeridas.`
+        }];
     }
-},
+}
       buildOvertimeSummary(){
         const summary={};
         this.overtimeAlerts.forEach(alert=>{

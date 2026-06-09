@@ -440,11 +440,9 @@
         const SHIFT=600; // 10h en minutos
         const STEP=5;    // resolución 5 min
 
-        // ── HELPERS ──
         const toM=(t)=>{if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
         const toHHMM=(m)=>{const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;};
 
-        // ── DEMANDA POR MINUTO PARA UN DÍA ──
         const computeDemand=(day,pool)=>{
           const d={};
           this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
@@ -457,21 +455,18 @@
               for(let t=eta-120;t<etd;t+=STEP)d[t]=(d[t]||0)+nE;
               for(let t=eta-15; t<etd;t+=STEP)d[t]=(d[t]||0)+nB;
             }else{
-              // encargado y operador: 1 por vuelo, llegan ETA-30
               for(let t=eta-30;t<etd;t+=STEP)d[t]=(d[t]||0)+1;
             }
           });
           return d;
         };
 
-        // ── ASIGNACIÓN DE TURNOS (first-shortage) ──
         const assignShifts=(demand,maxWorkers)=>{
           const workers=[];
           const coverage={};
           const times=Object.keys(demand).map(Number).sort((a,b)=>a-b);
           if(!times.length)return{workers,coverage};
           const tMin=times[0],tMax=times[times.length-1];
-
           for(let t=tMin;t<=tMax;t+=STEP){
             const dem=demand[t]||0;
             const cov=coverage[t]||0;
@@ -486,18 +481,21 @@
           return{workers,coverage};
         };
 
-        // ── POOLS ──
         const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
         const encargados=this.staff.filter(s=>s.role==='Encargado'&&s.active);
         const operadores=this.staff.filter(s=>s.role==='Operador'&&s.active);
 
-        // Contador de días trabajados para rotación justa
         const diasTrabajados={};
         [...rampas,...encargados,...operadores].forEach(e=>diasTrabajados[e.id]=0);
 
         const allDeficits=[];
+        let demMin=0,covMin=0,gapMin=0;
+        const poolMeta={
+          operativo:{rol:'Operativo',label:'Operativos'},
+          encargado:{rol:'Encargado de Vuelo',label:'Encargados'},
+          operador:{rol:'Operador',label:'Operadores'},
+        };
 
-        // ── PROCESAR CADA DÍA ──
         for(let day=1;day<=DIAS;day++){
           const dayFlights=this.flights.filter(f=>f.active&&f.days.includes(day));
 
@@ -514,9 +512,7 @@
             const demand=computeDemand(day,pool);
             const {workers,coverage}=assignShifts(demand,employees.length);
 
-            // Asignar empleados con rotación (menor días trabajados primero)
             const sorted=[...employees].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
-
             sorted.forEach((emp,i)=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
               if(i<workers.length){
@@ -524,8 +520,6 @@
                 const span=w.end-w.start;
                 const mid=w.start+Math.floor(span/2);
                 const meal=span>=300?`${toHHMM(mid)} - ${toHHMM(mid+45)}`:'-';
-
-                // Vuelos cubiertos por este turno
                 const vuelos=dayFlights
                   .filter(f=>{
                     const eta=toM(f.eta);let etd=toM(f.etd);
@@ -533,11 +527,9 @@
                     return(eta-15)<w.end&&etd>w.start;
                   })
                   .map(f=>`${f.airline} ${(f.type||'').substring(0,3)}`)
-                  .filter((v,i,a)=>a.indexOf(v)===i);
-
+                  .filter((v,idx,a)=>a.indexOf(v)===idx);
                 const vStr=vuelos.length?` [${vuelos.slice(0,4).join(' · ')}${vuelos.length>4?'…':''}]`:'';
                 const comStr=span>=300?' +comida':'';
-
                 this.currentRoster[emp.id][day]={
                   isDescanso:false,
                   blocks:`${toHHMM(w.start)} - ${toHHMM(w.end)}${vStr}${comStr}`,
@@ -549,97 +541,52 @@
               }
             });
 
-            // Calcular déficit por vuelo para overtime
-            dayFlights.forEach(f=>{
-              const aa=f.airline==='AA';
-              const eta=toM(f.eta);let etd=toM(f.etd);
-              if(etd<=eta)etd+=1440;
-
-              let needed;
-              if(pool==='operativo'){
-                const nE=aa?4:2;
-                const nB={DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7;
-                needed=nE+nB;
-              }else{
-                needed=1;
-              }
-
-              // Verificar cobertura en punto medio del vuelo
-              const mid=Math.floor((eta+etd)/2);
-              const midSnap=Math.floor(mid/STEP)*STEP;
-              const covered=coverage[midSnap]||0;
-              const def=needed-covered;
-
-              if(def>0){
-                allDeficits.push({
-                  day,
-                  flightId:f.id,
-                  label:`${f.airline} ${f.flightNo||''}`.trim(),
-                  pool,
-                  rol:pool==='operativo'?'Agente de Rampa':pool==='encargado'?'Encargado de Vuelo':'Operador',
-                  faltantes:def,
-                  start:eta-15,
-                  end:etd
-                });
+            const meta=poolMeta[pool];
+            let blk=null;
+            Object.keys(demand).map(Number).sort((a,b)=>a-b).forEach(t=>{
+              const dd=demand[t]||0, cc=coverage[t]||0;
+              demMin+=dd; covMin+=Math.min(dd,cc);
+              const g=dd-cc;
+              if(g>0){
+                gapMin+=g;
+                if(blk&&t===blk.last+STEP){ blk.last=t; if(g>blk.faltantes)blk.faltantes=g; }
+                else{ if(blk)allDeficits.push(blk); blk={day,pool,rol:meta.rol,labelPool:meta.label,start:t,last:t,faltantes:g}; }
               }
             });
+            if(blk)allDeficits.push(blk);
           };
 
           procesarPool(rampas,'operativo');
           procesarPool(encargados,'encargado');
           procesarPool(operadores,'operador');
 
-          // Supervisores: no participan en cálculo
           this.staff.filter(s=>s.role==='Supervisor').forEach(emp=>{
             if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
             this.currentRoster[emp.id][day]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
           });
         }
 
-        // ── OVERTIME ALERTS ──
-        const defMap={};
-        allDeficits.forEach(d=>{
-          const key=`${d.day}-${d.flightId}-${d.pool}`;
-          if(!defMap[key]){defMap[key]={...d,faltantes:0};}
-          defMap[key].faltantes=Math.max(defMap[key].faltantes,d.faltantes);
-        });
-
-        this.overtimeAlerts=Object.values(defMap).map(d=>({
-          id:`OT-${d.day}-${d.flightId}-${d.pool}`,
-          day:d.day,
-          label:d.label,
-          rol:d.rol,
-          start:d.start,
-          end:d.end,
-          faltantes:d.faltantes,
-          assignedEmps:this.extraShifts[`OT-${d.day}-${d.flightId}-${d.pool}`]||[],
-        })).sort((a,b)=>a.day-b.day||a.start-b.start);
+        // Una alerta por FRANJA de déficit (no por vuelo)
+        this.overtimeAlerts=allDeficits.map(d=>{
+          const id=`OT-${d.day}-${d.pool}-${d.start}`;
+          return {
+            id, day:d.day,
+            label:`${d.labelPool} ${toHHMM(d.start)}-${toHHMM(d.last+STEP)}`,
+            rol:d.rol, start:d.start, end:d.last+STEP,
+            faltantes:d.faltantes,
+            assignedEmps:this.extraShifts[id]||[],
+          };
+        }).sort((a,b)=>a.day-b.day||a.start-b.start);
 
         this.buildOvertimeSummary();
 
-        // ── MÉTRICAS ──
-        const totalNeeded=allDeficits.reduce((s,d)=>s+d.faltantes,0);
-        const totalWorkers=[...rampas,...encargados,...operadores].filter(e=>
-          Object.values(this.currentRoster[e.id]||{}).some(d=>!d.isDescanso)
-        ).length;
+        const pct=demMin===0?100:Math.round(100*covMin/demMin);
+        const gapHoras=Math.round(gapMin*STEP/60);
+        this.coverageMetrics={percent:pct,deficientHours:gapHoras,hoursIdle:0};
 
-        const pct=allDeficits.length===0?100:
-          Math.max(0,Math.round(100*(1-totalNeeded/(totalNeeded+
-            Object.values(this.currentRoster).reduce((s,days)=>
-              s+Object.values(days).filter(d=>!d.isDescanso).length,0)))));
-
-        this.coverageMetrics={
-          percent:pct,
-          deficientHours:totalNeeded,
-          hoursIdle:0
-        };
-
-        if(allDeficits.length>0){
-          const porRol={};
-          allDeficits.forEach(d=>{porRol[d.rol]=(porRol[d.rol]||0)+d.faltantes;});
-          const res=Object.entries(porRol).map(([r,n])=>`${n} ${r}`).join(', ');
+        if(this.overtimeAlerts.length>0){
           this.smartAlerts=[{type:'warning',
-            message:`Faltan ${totalNeeded} posiciones en el mes: ${res}. Ver Horas Extras.`}];
+            message:`Cobertura ${pct}% de ${this.monthName}. Déficit ≈ ${gapHoras} h-persona en ${this.overtimeAlerts.length} franjas. Ver Horas Extras.`}];
         }else{
           this.smartAlerts=[{type:'success',
             message:`Cobertura completa (100%) para todo ${this.monthName}.`}];
@@ -1319,8 +1266,8 @@
                   <template x-for="d in daysInMonth">
                     <td class="p-1 text-center" style="border-left:1px solid var(--border)">
                       <span class="block rounded text-[9px] font-bold py-0.5"
-                        :class="(staff.indexOf(emp)+d)%7===0?'pill-gray':'pill-green'"
-                        x-text="(staff.indexOf(emp)+d)%7===0?'L':'T'"></span>
+                        :class="getRosterStatus(emp.id,d).isDescanso?'pill-gray':'pill-green'"
+                        x-text="getRosterStatus(emp.id,d).isDescanso?'L':'T'"></span>
                     </td>
                   </template>
                 </tr>

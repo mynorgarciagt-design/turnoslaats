@@ -447,7 +447,8 @@
           const d={};
           this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
             const aa=f.airline==='AA';
-            const eta=toM(f.eta);let etd=toM(f.etd);
+            const norm5=(m)=>Math.round(m/5)*5;
+            const eta=norm5(toM(f.eta));let etd=norm5(toM(f.etd));
             if(etd<=eta)etd+=1440;
             if(pool==='operativo'){
               const nE=aa?4:2;

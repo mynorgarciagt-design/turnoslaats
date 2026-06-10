@@ -442,6 +442,7 @@
 
         const toM=(t)=>{if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
         const toHHMM=(m)=>{const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;};
+        const wd=(d)=>((new Date(this.selectedYear,this.selectedMonth-1,d).getDay())+6)%7; // 0=Lunes ... 6=Domingo
 
         const computeDemand=(day,pool)=>{
           const d={};
@@ -511,9 +512,21 @@
 
           const procesarPool=(employees,pool)=>{
             const demand=computeDemand(day,pool);
-            const {workers,coverage}=assignShifts(demand,employees.length);
 
-            const sorted=[...employees].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
+            // ── DESCANSO SEMANAL: 2 días/semana escalonados (máx 5 días seguidos) ──
+            const available=[],resting=[];
+            employees.forEach((emp,idx)=>{
+              const w=wd(day);
+              if(w===(2*idx)%7||w===(2*idx+1)%7) resting.push(emp); else available.push(emp);
+            });
+            resting.forEach(emp=>{
+              if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
+              this.currentRoster[emp.id][day]={isDescanso:true,blocks:'Descanso semanal',meal:'-'};
+            });
+
+            const {workers,coverage}=assignShifts(demand,available.length);
+
+            const sorted=[...available].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
             sorted.forEach((emp,i)=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
               if(i<workers.length){

@@ -303,7 +303,7 @@
       get daysInMonth(){
         return new Date(this.selectedYear,this.selectedMonth,0).getDate();
       },
-
+ 
       // Agrupa el déficit POR DÍA (no por slot)
       get overtimeByDay(){
         const groups={};
@@ -445,135 +445,25 @@
         };
         go();
       },
-
+ 
       buildRealRoster(){
         this.currentRoster={};
         this.extraShifts=this.extraShifts||{};
         this.overtimeAlerts=[];
         this.overtimeSummary=[];
-
+ 
         const DIAS=new Date(this.selectedYear,this.selectedMonth,0).getDate();
-        const SHIFT=600; // 10h en minutos
-        const STEP=5;    // resolución 5 min
-
+        const SHIFT=600;    // 10h de trabajo (todos los turnos suman exactamente esto)
+        const STEP=5;
+        const SPAN_MAX=840; // 14h máximo entre inicio y fin de un turno partido
+ 
+        // ▼ Poné false para ver la cobertura SIN descansos (sube a ~100%) ▼
+        const APLICAR_DESCANSOS=true;
+ 
         const toM=(t)=>{if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
         const toHHMM=(m)=>{const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;};
         const wd=(d)=>((new Date(this.selectedYear,this.selectedMonth-1,d).getDay())+6)%7; // 0=Lunes ... 6=Domingo
-
-        const computeDemand=(day,pool)=>{
-          const d={};
-          this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
-            const aa=f.airline==='AA';
-            const norm5=(m)=>Math.round(m/5)*5;
-            const eta=norm5(toM(f.eta));let etd=norm5(toM(f.etd));
-            if(etd<=eta)etd+=1440;
-            if(pool==='operativo'){
-              const nE=aa?4:2;
-              const nB={DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7;
-              for(let t=eta-120;t<etd;t+=STEP)d[t]=(d[t]||0)+nE;
-              for(let t=eta-15; t<etd;t+=STEP)d[t]=(d[t]||0)+nB;
-            }else{
-              for(let t=eta-30;t<etd;t+=STEP)d[t]=(d[t]||0)+1;
-            }
-          });
-          return d;
-        };
-
-        const assignShifts=(demand,maxWorkers)=>{
-          const workers=[];
-          const coverage={};
-          const times=Object.keys(demand).map(Number).sort((a,b)=>a-b);
-          if(!times.length)return{workers,coverage};
-          const tMin=times[0],tMax=times[times.length-1];
-          for(let t=tMin;t<=tMax;t+=STEP){
-            const dem=demand[t]||0;
-            const cov=coverage[t]||0;
-            if(dem>cov&&workers.length<maxWorkers){
-              const toAdd=Math.min(dem-cov,maxWorkers-workers.length);
-              for(let k=0;k<toAdd;k++){
-                workers.push({start:t,end:t+SHIFT});
-                for(let s=t;s<t+SHIFT;s+=STEP)coverage[s]=(coverage[s]||0)+1;
-              }
-            }
-          }
-          return{workers,coverage};
-        };
-
-        const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
-        const encargados=this.staff.filter(s=>s.role==='Encargado'&&s.active);
-        const operadores=this.staff.filter(s=>s.role==='Operador'&&s.active);
-
-        const diasTrabajados={};
-        [...rampas,...encargados,...operadores].forEach(e=>diasTrabajados[e.id]=0);
-
-        const allDeficits=[];
-        let demMin=0,covMin=0,gapMin=0;
-        const poolMeta={
-          operativo:{rol:'Operativo',label:'Operativos'},
-          encargado:{rol:'Encargado de Vuelo',label:'Encargados'},
-          operador:{rol:'Operador',label:'Operadores'},
-        };
-
-        for(let day=1;day<=DIAS;day++){
-          const dayFlights=this.flights.filter(f=>f.active&&f.days.includes(day));
-
-          if(!dayFlights.length){
-            [...rampas,...encargados,...operadores,...this.staff.filter(s=>s.role==='Supervisor')]
-              .forEach(emp=>{
-                if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
-                this.currentRoster[emp.id][day]={isDescanso:true,blocks:'-',meal:'-'};
-              });
-            continue;
-          }
-
-          const procesarPool=(employees,pool)=>{
-            const demand=computeDemand(day,pool);
-
-            // ── DESCANSO SEMANAL: 2 días/semana escalonados (máx 5 días seguidos) ──
-            const available=[],resting=[];
-            employees.forEach((emp,idx)=>{
-              const w=wd(day);
-              if(w===(2*idx)%7||w===(2*idx+1)%7) resting.push(emp); else available.push(emp);
-            });
-            resting.forEach(emp=>{
-              if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
-              this.currentRoster[emp.id][day]={isDescanso:true,blocks:'Descanso semanal',meal:'-'};
-            });
-
-            const {workers,coverage}=assignShifts(demand,available.length);
-
-            const sorted=[...available].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
-            sorted.forEach((emp,i)=>{
-              if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
-              if(i<workers.length){
-                const w=workers[i];
-                const span=w.end-w.start;
-                const mid=w.start+Math.floor(span/2);
-                const meal=span>=300?`${toHHMM(mid)} - ${toHHMM(mid+45)}`:'-';
-                const vuelos=dayFlights
-                  .filter(f=>{
-                    const eta=toM(f.eta);let etd=toM(f.etd);
-                    if(etd<=eta)etd+=1440;
-                    return(eta-15)<w.end&&etd>w.start;
-
-buildRealRoster(){
-        this.currentRoster={};
-        this.extraShifts=this.extraShifts||{};
-        this.overtimeAlerts=[];
-        this.overtimeSummary=[];
-
-        const DIAS=new Date(this.selectedYear,this.selectedMonth,0).getDate();
-        const SHIFT=600;   // 10h máximo de trabajo
-        const STEP=5;
-        const SPAN_MAX=840; // 14h máximo entre inicio y fin del día
-
-        // ▼ Poné false para ver la cobertura SIN descansos (sube a ~100%) ▼
-        const APLICAR_DESCANSOS=true;
-
-        const toM=(t)=>{if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
-        const toHHMM=(m)=>{const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;};
-        const wd=(d)=>((new Date(this.selectedYear,this.selectedMonth-1,d).getDay())+6)%7;
-
+ 
         const computeDemand=(day,pool)=>{
           const d={};
           this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
@@ -589,32 +479,32 @@ buildRealRoster(){
           });
           return d;
         };
-
-        // Turnos candidatos: continuos (10h) + partidos (2 bloques, gap>=3h, <=10h trabajo, <=14h span)
+ 
+        // Candidatos REDONDOS (inicio/fin en :00 o :30) y de 10h EXACTAS.
+        // Continuos: un bloque de 10h. Partidos: 2 bloques, gap>=3h, span<=14h, total=10h.
         const buildCandidates=(demand)=>{
           const times=Object.keys(demand).map(Number).sort((a,b)=>a-b);
           if(!times.length)return[];
           const lo=times[0],hi=times[times.length-1];
+          const g0=Math.floor(lo/30)*30, g1=Math.ceil(hi/30)*30; // grilla de 30 min alineada a medianoche
           const cands=[];
-          for(let s=lo;s<=hi;s+=30)cands.push([[s,s+SHIFT]]);
-          for(let s1=lo;s1<toM('15:00');s1+=60){
-            for(const d1 of [120,180,240,300]){
-              const e1=s1+d1;
-              for(let s2=e1+180;s2<=hi;s2+=60){
-                for(const d2 of [120,180,240,300]){
-                  if(d1+d2>600)continue;
-                  const e2=s2+d2;
-                  if(e2>hi+SHIFT)continue;
-                  if(e2-s1>SPAN_MAX)continue;
-                  cands.push([[s1,e1],[s2,e2]]);
-                }
+          for(let s=g0;s<=g1;s+=30)cands.push([[s,s+SHIFT]]);
+          for(let s1=g0;s1<=toM('15:00');s1+=30){
+            for(let d1=120;d1<=480;d1+=30){
+              const e1=s1+d1; const d2=SHIFT-d1; // el segundo bloque completa las 10h
+              if(d2<120)continue;
+              for(let s2=e1+180;s2<=g1;s2+=30){
+                const e2=s2+d2;
+                if(e2>g1)continue;
+                if(e2-s1>SPAN_MAX)continue;
+                cands.push([[s1,e1],[s2,e2]]);
               }
             }
           }
           return cands;
         };
-
-        // Greedy: elige los turnos que cubren la mayor brecha de demanda
+ 
+        // Greedy: en cada paso elige el turno que cubre la mayor brecha de demanda.
         const assignMixed=(demand,maxWorkers)=>{
           const cands=buildCandidates(demand);
           const candSlots=cands.map(bl=>{const a=[];for(const seg of bl)for(let t=seg[0];t<seg[1];t+=STEP)a.push(t);return a;});
@@ -633,14 +523,14 @@ buildRealRoster(){
           }
           return {workers,coverage};
         };
-
+ 
         const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
         const encargados=this.staff.filter(s=>s.role==='Encargado'&&s.active);
         const operadores=this.staff.filter(s=>s.role==='Operador'&&s.active);
         const diasTrabajados={}; [...rampas,...encargados,...operadores].forEach(e=>diasTrabajados[e.id]=0);
         const allDeficits=[]; let demMin=0,covMin=0,gapMin=0;
         const poolMeta={operativo:{rol:'Operativo',label:'Operativos'},encargado:{rol:'Encargado de Vuelo',label:'Encargados'},operador:{rol:'Operador',label:'Operadores'}};
-
+ 
         for(let day=1;day<=DIAS;day++){
           const dayFlights=this.flights.filter(f=>f.active&&f.days.includes(day));
           if(!dayFlights.length){
@@ -650,10 +540,11 @@ buildRealRoster(){
             });
             continue;
           }
-
+ 
           const procesarPool=(employees,pool)=>{
             const demand=computeDemand(day,pool);
-
+ 
+            // ── DESCANSO SEMANAL: 2 días/semana escalonados (máx 5 días seguidos) ──
             const available=[],resting=[];
             employees.forEach((emp,idx)=>{
               const w=wd(day);
@@ -663,9 +554,9 @@ buildRealRoster(){
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
               this.currentRoster[emp.id][day]={isDescanso:true,blocks:'Descanso semanal',meal:'-'};
             });
-
+ 
             const {workers,coverage}=assignMixed(demand,available.length);
-
+ 
             const sorted=[...available].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
             sorted.forEach((emp,i)=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
@@ -683,7 +574,7 @@ buildRealRoster(){
                 this.currentRoster[emp.id][day]={isDescanso:true,blocks:'-',meal:'-'};
               }
             });
-
+ 
             const meta=poolMeta[pool]; let blk=null;
             Object.keys(demand).map(Number).sort((a,b)=>a-b).forEach(t=>{
               const dd=demand[t]||0,cc=coverage[t]||0; demMin+=dd; covMin+=Math.min(dd,cc);
@@ -692,14 +583,14 @@ buildRealRoster(){
             });
             if(blk)allDeficits.push(blk);
           };
-
+ 
           procesarPool(rampas,'operativo'); procesarPool(encargados,'encargado'); procesarPool(operadores,'operador');
           this.staff.filter(s=>s.role==='Supervisor').forEach(emp=>{
             if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
             this.currentRoster[emp.id][day]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
           });
         }
-
+ 
         this.overtimeAlerts=allDeficits.map(d=>({id:`OT-${d.day}-${d.pool}-${d.start}`,day:d.day,label:`${d.labelPool} ${toHHMM(d.start)}-${toHHMM(d.last+STEP)}`,rol:d.rol,start:d.start,end:d.last+STEP,faltantes:d.faltantes,assignedEmps:this.extraShifts[`OT-${d.day}-${d.pool}-${d.start}`]||[]})).sort((a,b)=>a.day-b.day||a.start-b.start);
         this.buildOvertimeSummary();
         const pct=demMin===0?100:Math.round(100*covMin/demMin);
@@ -711,7 +602,7 @@ buildRealRoster(){
           this.smartAlerts=[{type:'success',message:`Cobertura completa (100%) para todo ${this.monthName}.`}];
         }
       },
-                    
+ 
       buildOvertimeSummary(){
         const summary={};
         this.overtimeAlerts.forEach(alert=>{

@@ -592,6 +592,29 @@
         }
  
         this.overtimeAlerts=allDeficits.map(d=>({id:`OT-${d.day}-${d.pool}-${d.start}`,day:d.day,label:`${d.labelPool} ${toHHMM(d.start)}-${toHHMM(d.last+STEP)}`,rol:d.rol,start:d.start,end:d.last+STEP,faltantes:d.faltantes,assignedEmps:this.extraShifts[`OT-${d.day}-${d.pool}-${d.start}`]||[]})).sort((a,b)=>a.day-b.day||a.start-b.start);
+        // ── Unificar slots: fusionar cercanos (<=60min) del mismo pool, redondear a :30, mínimo 1h ──
+        {
+          const MGAP=60, MMIN=60, MRD=30;
+          const byKey={};
+          this.overtimeAlerts.forEach(a=>{ const k=a.day+'|'+a.rol; (byKey[k]=byKey[k]||[]).push(a); });
+          const merged=[];
+          Object.values(byKey).forEach(list=>{
+            list.sort((x,y)=>x.start-y.start);
+            let cur=null;
+            list.forEach(a=>{
+              if(cur && a.start-cur.end<=MGAP){ cur.end=Math.max(cur.end,a.end); cur.faltantes=Math.max(cur.faltantes,a.faltantes); }
+              else{ if(cur)merged.push(cur); cur={...a}; }
+            });
+            if(cur)merged.push(cur);
+          });
+          this.overtimeAlerts=merged.map(a=>{
+            let s=Math.floor(a.start/MRD)*MRD;
+            let e=Math.ceil(a.end/MRD)*MRD;
+            if(e-s<MMIN)e=s+MMIN;
+            const id=`OT-${a.day}-${a.rol}-${s}`.replace(/\s+/g,'_');
+            return {...a, id, start:s, end:e, label:`${a.rol} ${toHHMM(s)}-${toHHMM(e)}`, assignedEmps:this.extraShifts[id]||[]};
+          }).sort((x,y)=>x.day-y.day||x.start-y.start);
+        }
         this.buildOvertimeSummary();
         const pct=demMin===0?100:Math.round(100*covMin/demMin);
         const gapHoras=Math.round(gapMin*STEP/60);
@@ -1498,7 +1521,7 @@
     <div>
       <label class="text-xs font-600 text-secondary block mb-2">Selecciona empleado(s) para cubrir — filtra por rol recomendado</label>
       <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
-        <template x-for="emp in staff.filter(s=>s.active&&s.role!=='Supervisor')" :key="emp.id">
+        <template x-for="emp in staff.filter(s=>s.active&&s.role!=='Supervisor').sort((a,b)=>{const r=(e)=>{const st=getRosterStatus(e.id,selectedExtraSlot?.day);return st.isDescanso?(st.blocks==='Descanso semanal'?1:2):0;};return r(a)-r(b);})" :key="emp.id">
           <div @click="toggleExtraEmp(emp.name)" class="flex items-center gap-3 p-2 rounded-lg cursor-pointer transition"
             :class="extrasAssignEmps.includes(emp.name)?'':'hover:bg-[var(--surface2)]'"
             :style="extrasAssignEmps.includes(emp.name)?'background:var(--green-light);border:1.5px solid #A7F3D0':'border:1.5px solid transparent'">

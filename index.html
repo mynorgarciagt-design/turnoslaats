@@ -244,12 +244,15 @@
       authReady:false, user:null, loginEmail:'', loginPassword:'', loginError:'', loginLoading:false,
       // UI
       darkMode:false, currentTab:'inicio', mobileMenuOpen:false,
-      flightFilter:'', flightDayFilter:'', staffFilter:'', rosterViewMode:'day',
+      flightFilter:'', flightDayFilter:'', flightSort:'', staffFilter:'', rosterViewMode:'day',
       selectedEmp:null,
       editingFlight:null, editingStaff:null, disableModalOpen:false,
       disableReason:'', selectedStaffToDisable:null,
-      extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmps:[], overtimeSummary:[],
-      generationProgress:null, scheduleGenerated:false,
+      extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmps:[], overtimeSummary:[], extraSugg:{}, extraConflicts:{}, extrasCandidates:[],
+      expandedSummary:null, compSalary:4000, compOT:30, compCap:40,
+      hiringCurve:[{extra:0,def:794,cob:95.3},{extra:5,def:536,cob:96.8},{extra:10,def:344,cob:98},{extra:15,def:205,cob:98.8},{extra:20,def:112,cob:99.3},{extra:25,def:45,cob:99.7},{extra:30,def:14,cob:99.9},{extra:35,def:6,cob:99.9},{extra:40,def:2,cob:99.9}],
+      airlineAdvOpen:{},
+      generationProgress:null, calculando:false, calcDia:0, calcTotal:0, scheduleGenerated:false, shiftMode:'fixed10',
       csvStatus:'', saveStatus:'',
       // Data
       flights:[], staff:[], currentRoster:{}, extraShifts:{},
@@ -258,6 +261,8 @@
       airlineRules:JSON.parse(JSON.stringify(INITIAL_AIRLINE_RULES)),
       algorithmRules:{
         encargadosPorVuelo:1, operadoresPorVuelo:1,
+        basePorTipo:{DESPACHO:7,TURN:10,RECEPCION:8},
+        minAntesReceptores:120, minAntesBase:15, minAntesEncOp:30,
         minutosAntesVuelo:15, maxHorasDiarias:10,
         minHorasBloque:2, minDescansoPartido:180,
         minutosComida:45, umbralComida:300, umbralAgrupar:180,
@@ -273,12 +278,13 @@
         this.buildStaff();
         this.updateClock();
         setInterval(()=>this.updateClock(),30000);
+        this.restoreMonthPref(); // recordar el último mes de trabajo (no atarlo a la fecha de hoy)
         // Dark mode preference
         if(localStorage.getItem('laats-dark')==='1') this.enableDark();
         // Firebase auth listener
-        auth.onAuthStateChanged(u=>{
+        auth.onAuthStateChanged(async u=>{
           this.user=u; this.authReady=true;
-          if(u) this.loadFromFirestore();
+          if(u){ await this.loadStaff(); await this.loadFromFirestore(); }
         });
       },
  
@@ -289,10 +295,9 @@
         const days=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
         const months=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
         this.nowDate=`${days[n.getDay()]}, ${n.getDate()} de ${months[n.getMonth()]} ${n.getFullYear()}`;
-        // auto-select today
-        this.selectedDay=n.getDate();
-        this.selectedMonth=n.getMonth()+1;
-        this.selectedYear=n.getFullYear();
+        // NO auto-seleccionar mes/día aquí: el mes lo fija el Excel cargado o el selector
+        // manual, y se recuerda en localStorage. (Antes esto regresaba todo a "hoy" cada 30s,
+        // por eso al cargar julio el navegador de días se quedaba clavado en junio.)
       },
  
       get monthName(){
@@ -303,18 +308,32 @@
       get daysInMonth(){
         return new Date(this.selectedYear,this.selectedMonth,0).getDate();
       },
+
+      // El mes de trabajo se recuerda entre recargas (no se ata a la fecha de hoy).
+      persistMonthPref(){ try{ localStorage.setItem('laats-month',this.selectedMonth); localStorage.setItem('laats-year',this.selectedYear); }catch(e){} },
+      restoreMonthPref(){ try{ const m=parseInt(localStorage.getItem('laats-month')), y=parseInt(localStorage.getItem('laats-year')); if(m>=1&&m<=12)this.selectedMonth=m; if(y>=2000&&y<=2100)this.selectedYear=y; if(this.selectedDay>this.daysInMonth)this.selectedDay=this.daysInMonth; }catch(e){} },
+
+      // Cambiar el mes a mano (selector): recordar, ajustar el día y cargar lo guardado de ese mes.
+      async selectMonth(){
+        this.selectedMonth=+this.selectedMonth; this.selectedYear=+this.selectedYear;
+        if(this.selectedDay>this.daysInMonth)this.selectedDay=this.daysInMonth;
+        this.persistMonthPref();
+        await this.loadFromFirestore({resetIfMissing:true});
+      },
  
       // Agrupa el déficit POR DÍA (no por slot)
       get overtimeByDay(){
         const groups={};
         this.overtimeAlerts.forEach(a=>{
-          if(!groups[a.day])groups[a.day]={day:a.day,franjas:[],faltanTotal:0};
+          if(!groups[a.day])groups[a.day]={day:a.day,franjas:[],faltanTotal:0,deficitMin:0};
           groups[a.day].franjas.push(a);
-          const pend=Math.max(0,a.faltantes-(a.assignedEmps?a.assignedEmps.length:0));
+          const pend=Math.max(0,(a.personasReales||a.faltantes)-(a.assignedEmps?a.assignedEmps.length:0));
           groups[a.day].faltanTotal+=pend;
+          groups[a.day].deficitMin+=(a.deficitMin||0);
         });
         return Object.values(groups).map(g=>({
           day:g.day, franjas:g.franjas, faltanTotal:g.faltanTotal,
+          horasTotal:Math.round(g.deficitMin/60),
           vuelos:this.flights.filter(f=>f.active&&f.days.includes(g.day)).length,
           cubierto:g.faltanTotal===0
         })).sort((a,b)=>a.day-b.day);
@@ -335,7 +354,7 @@
       async logout(){ await auth.signOut(); this.flights=[]; this.currentRoster={}; this.scheduleGenerated=false; },
  
       // ── FIRESTORE ──
-      async loadFromFirestore(){
+      async loadFromFirestore(opts={}){
         try{
           const key=`laats_${this.selectedYear}_${this.selectedMonth}`;
           const doc=await db.collection('laats_turnos').doc(key).get();
@@ -343,14 +362,35 @@
             const d=doc.data();
             if(d.flights) this.flights=d.flights;
             if(d.airlineRules) this.airlineRules=d.airlineRules;
-            if(d.algorithmRules) this.algorithmRules=d.algorithmRules;
+            if(d.algorithmRules){ this.algorithmRules=d.algorithmRules;
+              const a=this.algorithmRules;
+              if(!a.basePorTipo)a.basePorTipo={DESPACHO:7,TURN:10,RECEPCION:8};
+              if(a.minAntesReceptores==null)a.minAntesReceptores=120;
+              if(a.minAntesBase==null)a.minAntesBase=15;
+              if(a.minAntesEncOp==null)a.minAntesEncOp=30;
+            }
             if(d.currentRoster){ this.currentRoster=d.currentRoster; this.scheduleGenerated=true; }
             if(d.extraShifts) this.extraShifts=d.extraShifts;
             if(d.smartAlerts) this.smartAlerts=d.smartAlerts;
             if(d.overtimeAlerts) this.overtimeAlerts=d.overtimeAlerts;
             if(d.coverageMetrics) this.coverageMetrics=d.coverageMetrics;
+            // Descartar rastros de horas extra de personal YA ELIMINADO: si se borró sin guardar
+            // antes de recargar, su nombre "revivía" al cargar la copia vieja de la nube. Los
+            // inhabilitados SÍ se conservan (sus horas ya trabajadas siguen siendo válidas para el pago).
+            const existingNames=new Set(this.staff.map(s=>s.name));
+            (this.overtimeAlerts||[]).forEach(a=>{ if(a.assignedEmps)a.assignedEmps=a.assignedEmps.filter(n=>existingNames.has(n)); });
+            Object.keys(this.extraShifts||{}).forEach(k=>{ this.extraShifts[k]=(this.extraShifts[k]||[]).filter(n=>existingNames.has(n)); });
+            this.buildOvertimeSummary(); // recalcular el acumulado al cargar (si no, queda vacío tras recargar)
+            this.initAirlineAdvOpen(); // mostrar los overrides de base por aerolínea ya guardados
             this.saveStatus='✅ Datos cargados desde la nube.';
             setTimeout(()=>this.saveStatus='',3000);
+          }else if(opts.resetIfMissing){
+            // El mes elegido no tiene nada guardado: limpiar para cargar su Excel (no dejar el mes anterior).
+            this.flights=[]; this.currentRoster={}; this.scheduleGenerated=false;
+            this.extraShifts={}; this.smartAlerts=[]; this.overtimeAlerts=[]; this.overtimeSummary=[];
+            this.coverageMetrics={percent:100,deficientHours:0,hoursIdle:0};
+            this.saveStatus='Este mes no tiene datos guardados. Cargá su Excel.';
+            setTimeout(()=>this.saveStatus='',4000);
           }
         }catch(e){ console.error('Error cargando Firestore',e); }
       },
@@ -359,7 +399,8 @@
         this.saveStatus='Guardando...';
         try{
           const key=`laats_${this.selectedYear}_${this.selectedMonth}`;
-          await db.collection('laats_turnos').doc(key).set({
+          // El paso por JSON elimina campos `undefined`, que Firestore rechaza.
+          const payload=JSON.parse(JSON.stringify({
             flights:this.flights,
             airlineRules:this.airlineRules,
             algorithmRules:this.algorithmRules,
@@ -369,18 +410,60 @@
             overtimeAlerts:this.overtimeAlerts,
             coverageMetrics:this.coverageMetrics,
             updatedAt:new Date().toISOString()
-          });
+          }));
+          await db.collection('laats_turnos').doc(key).set(payload);
           this.saveStatus='✅ Guardado en la nube.';
           setTimeout(()=>this.saveStatus='',3000);
-        }catch(e){ this.saveStatus='❌ Error al guardar.'; }
+        }catch(e){
+          console.error('Error al guardar en Firestore',e);
+          this.saveStatus='❌ Error al guardar: '+((e&&(e.code||e.message))||e);
+        }
       },
  
+      // ── PERSISTENCIA DE PERSONAL (doc global: el personal es el mismo todos los meses) ──
+      async loadStaff(){
+        try{
+          const doc=await db.collection('laats_turnos').doc('_staff').get();
+          if(doc.exists){ const d=doc.data(); if(Array.isArray(d.staff)&&d.staff.length) this.staff=d.staff; }
+        }catch(e){ console.error('Error cargando personal',e); }
+      },
+      async persistStaff(){
+        try{ await db.collection('laats_turnos').doc('_staff').set({staff:JSON.parse(JSON.stringify(this.staff)),updatedAt:new Date().toISOString()}); }
+        catch(e){ console.error('Error guardando personal',e); }
+      },
+
       // ── STAFF ──
       buildStaff(){
         this.staff=STAFF_DATA.map((s,i)=>({
           id:`EMP-${String(i+1).padStart(3,'0')}`,
           name:s.name, role:s.role, active:true, disableReason:''
         }));
+      },
+
+      // Toda aerolínea presente en los vuelos debe tener su regla editable en el panel.
+      // Las nuevas entran con el default (2 receptores, o 4 si es exactamente "AA").
+      syncAirlineRules(){
+        (this.flights||[]).forEach(f=>{
+          if(f.airline&&!this.airlineRules[f.airline])
+            this.airlineRules[f.airline]={name:f.airline, receptores:(f.airline==='AA'?4:2)};
+        });
+      },
+      // Abre/cierra el "Avanzado" de una aerolínea. Al abrir, crea el override de base
+      // VACÍO (null = hereda el global). Solo guarda números cuando el usuario los escribe.
+      toggleAirlineAdv(key){
+        this.airlineAdvOpen[key]=!this.airlineAdvOpen[key];
+        const v=this.airlineRules[key];
+        if(v&&!v.basePorTipo)v.basePorTipo={DESPACHO:null,TURN:null,RECEPCION:null};
+      },
+      // Tras cargar de la nube, dejar abierto el "Avanzado" de las aerolíneas que YA tienen
+      // un override de base guardado, para que se vean (airlineAdvOpen no se persiste).
+      initAirlineAdvOpen(){
+        const o={};
+        Object.entries(this.airlineRules||{}).forEach(([k,v])=>{
+          const b=v&&v.basePorTipo;
+          if(b&&[b.DESPACHO,b.TURN,b.RECEPCION].some(x=>typeof x==='number'&&!isNaN(x)))o[k]=true;
+        });
+        this.airlineAdvOpen=o;
       },
  
       // ── HELPERS TIEMPO ──
@@ -433,20 +516,28 @@
         const go=()=>{
           if(i<steps.length){this.generationProgress=steps[i++];setTimeout(go,80);}
           else{
-            this.generationProgress=null;
-            try{
-              this.buildRealRoster();
-              this.scheduleGenerated=true;
-            }catch(err){
-              alert('Error generando turnos: '+err.message);
-              console.error(err);
-            }
+            // El cálculo del mes bloquea el navegador varios minutos. Mostramos un aviso de
+            // "procesando" y le damos un respiro (setTimeout) para pintarlo ANTES de arrancar;
+            // si no, la pantalla se congela sin feedback y parece colgada.
+            this.generationProgress=null; this.calculando=true; this.calcDia=0; this.calcTotal=0;
+            setTimeout(async()=>{
+              try{
+                await this.buildRealRoster();
+                this.scheduleGenerated=true;
+              }catch(err){
+                alert('Error generando turnos: '+err.message);
+                console.error(err);
+              }finally{
+                this.calculando=false; this.calcDia=0;
+              }
+            },60);
           }
         };
         go();
       },
  
-      buildRealRoster(){
+      async buildRealRoster(){
+        this.syncAirlineRules();
         this.currentRoster={};
         this.extraShifts=this.extraShifts||{};
         this.overtimeAlerts=[];
@@ -455,80 +546,286 @@
         const DIAS=new Date(this.selectedYear,this.selectedMonth,0).getDate();
         const SHIFT=600;    // 10h de trabajo (todos los turnos suman exactamente esto)
         const STEP=5;
-        const SPAN_MAX=840; // 14h máximo entre inicio y fin de un turno partido
+        const SPAN_MAX=900; // 15h máx entre inicio y fin (permite partido de 12h + 3h de gap)
  
         // ▼ Poné false para ver la cobertura SIN descansos (sube a ~100%) ▼
         const APLICAR_DESCANSOS=true;
+        // ▼ Limpieza: equipo COMPARTIDO de operativos que limpia SOLO vuelos TURN y
+        //   RECEPCIÓN (no DESPACHO). Es demanda ADICIONAL a la de rampa, pero la misma
+        //   persona hace rampa cuando no está limpiando (no se aparta gente fija).
+        //   Poné LIMPIEZA_ACTIVA=false para ver la cobertura como antes (sin limpieza). ▼
+        const LIMPIEZA_ACTIVA=true;
+        const EQUIPO_LIMPIEZA=8;
+        const LIMPIEZA_MIN=30;  // cuánto tarda el equipo en limpiar un avión, desde la llegada
+        // ▼ Descansos. 'fijo' = escalonado por índice (uniforme). Es el ÓPTIMO con esta data:
+        //   medido con vuelos reales de junio, 'fijo' da 92% y 'demanda' 90% (PEOR). Motivo:
+        //   la demanda varía entre semanas (no dentro de la semana), así que no hay margen para
+        //   reacomodar descansos. Se deja 'demanda' por si cambia el patrón de vuelos, pero NO
+        //   se recomienda (además tiene sesgo en semanas parciales). Mantener 'fijo'. ▼
+        const DESCANSO_MODO='fijo';
  
         const toM=(t)=>{if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
         const toHHMM=(m)=>{const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;};
         const wd=(d)=>((new Date(this.selectedYear,this.selectedMonth-1,d).getDay())+6)%7; // 0=Lunes ... 6=Domingo
+        // Demanda en grilla de STEP, al múltiplo más cercano (fiel: NO agranda la ventana de
+        // cada vuelo). Los turnos se pegan a esta demanda vía sus bordes (ver buildCandidates),
+        // así que el "redondeo hacia cubrir" lo hacen los turnos, no la necesidad.
+        const norm5=(m)=>Math.round(m/STEP)*STEP;
  
+        // Demanda por vuelo. Lee las Reglas (panel) con RESPALDO a los valores fijos validados:
+        // si un campo falta (ej. mes guardado viejo), usa el default → mismo resultado de siempre.
         const computeDemand=(day,pool)=>{
+          const AR=this.algorithmRules||{}, RULES=this.airlineRules||{};
+          const numOr=(v,def)=>(typeof v==='number'&&!isNaN(v))?v:def;
           const d={};
           this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
-            const aa=f.airline==='AA';
-            const norm5=(m)=>Math.round(m/5)*5;
             const eta=norm5(toM(f.eta));let etd=norm5(toM(f.etd));
             if(etd<=eta)etd+=1440;
             if(pool==='operativo'){
-              const nE=aa?4:2; const nB={DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7;
-              for(let t=eta-120;t<etd;t+=STEP)d[t]=(d[t]||0)+nE;
-              for(let t=eta-15; t<etd;t+=STEP)d[t]=(d[t]||0)+nB;
-            }else{ for(let t=eta-30;t<etd;t+=STEP)d[t]=(d[t]||0)+1; }
+              const ar=RULES[f.airline]||{};
+              const nE=numOr(ar.receptores, f.airline==='AA'?4:2);                                  // receptores por aerolínea
+              const nB=numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type], {DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7)); // base: override por aerolínea → global → default
+              const oR=numOr(AR.minAntesReceptores,120), oB=numOr(AR.minAntesBase,15);
+              // La anticipación no puede cruzar hacia el día ANTERIOR (vuelo de la 01:28 con 120min
+              // pediría gente a las 23:28 de la víspera → caía en el día equivocado). Se recorta a 00:00.
+              for(let t=Math.max(0,eta-oR);t<etd;t+=STEP)d[t]=(d[t]||0)+nE;
+              for(let t=Math.max(0,eta-oB);t<etd;t+=STEP)d[t]=(d[t]||0)+nB;
+            }else{
+              const cnt=numOr(pool==='encargado'?AR.encargadosPorVuelo:AR.operadoresPorVuelo,1);
+              const oE=numOr(AR.minAntesEncOp,30);
+              for(let t=Math.max(0,eta-oE);t<etd;t+=STEP)d[t]=(d[t]||0)+cnt;
+            }
           });
           return d;
         };
+
+        // Demanda de limpieza: equipo compartido fijo (EQUIPO_LIMPIEZA) que limpia cada
+        // avión TURN/RECEPCIÓN durante ~LIMPIEZA_MIN desde la llegada (NO todo el tiempo
+        // que el avión está en tierra). NO se suma por vuelo: si dos llegadas caen dentro
+        // de esa ventana, el mismo equipo se reparte. Devuelve {} si está desactivada.
+        const computeLimpieza=(day)=>{
+          const d={};
+          if(!LIMPIEZA_ACTIVA)return d;
+          const activos=new Set();
+          this.flights.filter(f=>f.active&&f.days.includes(day)&&(f.type==='TURN'||f.type==='RECEPCION')).forEach(f=>{
+            const eta=norm5(toM(f.eta));let etd=norm5(toM(f.etd));
+            if(etd<=eta)etd+=1440;
+            const fin=Math.min(eta+LIMPIEZA_MIN,etd); // la limpieza no se extiende más allá de la salida
+            for(let t=eta;t<fin;t+=STEP)activos.add(t);
+          });
+          activos.forEach(t=>{d[t]=EQUIPO_LIMPIEZA;});
+          return d;
+        };
  
-        // Candidatos REDONDOS (inicio/fin en :00 o :30) y de 10h EXACTAS.
-        // Continuos: un bloque de 10h. Partidos: 2 bloques, gap>=3h, span<=14h, total=10h.
+        // Candidatos PEGADOS A LA OPERACIÓN: arrancan/terminan en los BORDES de la demanda
+        // (instantes donde sube o baja), no en una grilla fija :00/:30. Así el turno se engancha
+        // exacto a cuando entra o sale la necesidad del vuelo y no quedan huecos de borde.
+        // Corridos de 10h. Partidos: 2 bloques (gap>=3h, span<=SPAN_MAX, total=10h).
         const buildCandidates=(demand)=>{
           const times=Object.keys(demand).map(Number).sort((a,b)=>a-b);
           if(!times.length)return[];
           const lo=times[0],hi=times[times.length-1];
-          const g0=Math.floor(lo/30)*30, g1=Math.ceil(hi/30)*30; // grilla de 30 min alineada a medianoche
-          const cands=[];
-          for(let s=g0;s<=g1;s+=30)cands.push([[s,s+SHIFT]]);
-          for(let s1=g0;s1<=toM('15:00');s1+=30){
-            for(let d1=120;d1<=480;d1+=30){
-              const e1=s1+d1; const d2=SHIFT-d1; // el segundo bloque completa las 10h
-              if(d2<120)continue;
-              for(let s2=e1+180;s2<=g1;s2+=30){
-                const e2=s2+d2;
-                if(e2>g1)continue;
-                if(e2-s1>SPAN_MAX)continue;
-                cands.push([[s1,e1],[s2,e2]]);
+          // bordes = instantes donde CAMBIA el nivel de demanda (subidas y bajadas) + extremos
+          const edgeSet=new Set([lo,hi+STEP]); let prev=0;
+          for(let t=lo;t<=hi+STEP;t+=STEP){const cur=demand[t]||0;if(cur!==prev)edgeSet.add(t);prev=cur;}
+          const edges=[...edgeSet].sort((a,b)=>a-b);
+          const cands=[]; const seen=new Set();
+          const pushCont=(s,e)=>{if(s<0||e<=lo||s>=hi+STEP)return;const k=s+':'+e;if(seen.has(k))return;seen.add(k);cands.push([[s,e]]);};
+          // Corridos: arrancan en un borde (s→s+10h) o terminan en un borde (e−10h→e)
+          const SHIFT_MAX=680; // tope corrido: 11h20 (11h + 5min de gracia para cerrar el vuelo); NUNCA llega a 12h
+          for(const b of edges){pushCont(b,b+SHIFT);pushCont(b-SHIFT,b);}
+          // Corridos EXTENDIDOS: arrancan y terminan en bordes, de 10h hasta el tope; el exceso
+          // sobre las 10h queda como horas extra (cerrar un hueco quedándose un rato más).
+          for(const b1 of edges){for(const b2 of edges){const dur=b2-b1;if(dur>SHIFT&&dur<=SHIFT_MAX)pushCont(b1,b2);}}
+          // Partidos: los 4 puntos (inicio/fin de cada bloque) en bordes; cada bloque >=2h,
+          // gap >=3h, span <=SPAN_MAX, total de 10h hasta el tope (12h + tolerancia). El exceso
+          // sobre las 10h queda como horas extra, igual que en los corridos.
+          const SPLIT_MAX=720; // tope partido: 12h justas
+          for(const s1 of edges){
+            for(const e1 of edges){
+              const d1=e1-s1; if(d1<120||d1>600)continue;
+              for(const s2 of edges){
+                if(s2<e1+180)continue;            // gap >= 3h
+                for(const e2 of edges){
+                  const d2=e2-s2; if(d2<120)continue;
+                  const total=d1+d2; if(total<SHIFT||total>SPLIT_MAX)continue;
+                  if(e2-s1>SPAN_MAX)continue;      // span
+                  cands.push([[s1,e1],[s2,e2]]);
+                }
               }
             }
           }
           return cands;
         };
  
-        // Greedy: en cada paso elige el turno que cubre la mayor brecha de demanda.
-        const assignMixed=(demand,maxWorkers)=>{
+        // GRASP: greedy multi-arranque + búsqueda local.
+        // La construcción 0 es el greedy determinista original y SIEMPRE pasa por
+        // búsqueda local, así que la solución final nunca es peor que la del
+        // algoritmo anterior. Las demás construcciones eligen al azar entre los
+        // 2-4 mejores candidatos de cada paso (semilla fija: cada clic con los
+        // mismos datos da el mismo resultado) y la mejor también se pule con
+        // búsqueda local; gana la de mayor cobertura útil.
+        // Reglas de turnos (10h, redondez, partidos válidos) las garantiza buildCandidates;
+        // este algoritmo solo decide QUÉ candidato recibe cada empleado.
+        const GRASP_RESTARTS=24;
+        const assignMixed=(demand,maxWorkers,seed)=>{
           const cands=buildCandidates(demand);
+          if(!cands.length||maxWorkers<=0)return {workers:[],coverage:{}};
           const candSlots=cands.map(bl=>{const a=[];for(const seg of bl)for(let t=seg[0];t<seg[1];t+=STEP)a.push(t);return a;});
-          const coverage={};
-          const workers=[];
-          for(let w=0;w<maxWorkers;w++){
-            let best=-1,bv=0;
-            for(let i=0;i<candSlots.length;i++){
-              const sl=candSlots[i];let v=0;
-              for(let j=0;j<sl.length;j++){if((demand[sl[j]]||0)>(coverage[sl[j]]||0))v++;}
-              if(v>bv){bv=v;best=i;}
+          const nC=candSlots.length;
+          // Costo de cada candidato = minutos que pasa de las 10h (extensión), en "slots".
+          // El optimizador resta LAMBDA_OT*costo a la ganancia: extiende un turno SOLO si la
+          // mayoría de la hora extra cubre necesidad real; si no, prefiere un turno normal o
+          // que entre antes un relevo (lo más barato emerge de esta comparación).
+          const candCost=cands.map(bl=>{let dur=0;for(const seg of bl)dur+=seg[1]-seg[0];return Math.max(0,dur-SHIFT)/STEP;});
+          const LAMBDA_OT=0.7;
+          const score=(i,cov)=>gainOf(candSlots[i],cov)-LAMBDA_OT*candCost[i];
+          let st=((seed>>>0)+1)|0; // mulberry32: PRNG determinista
+          const rnd=()=>{st=st+0x6D2B79F5|0;let t=Math.imul(st^st>>>15,1|st);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};
+          const gainOf=(slots,cov)=>{let v=0;for(let j=0;j<slots.length;j++){if((demand[slots[j]]||0)>(cov[slots[j]]||0))v++;}return v;};
+          // Cobertura útil total = Σ min(demanda, cobertura) por franja.
+          const usefulValue=(coverage)=>{let v=0;for(const t in demand){const d=demand[t],c=coverage[t]||0;v+=c<d?c:d;}return v;};
+
+          // Construcción determinista: idéntica al greedy original.
+          const greedyDet=()=>{
+            const coverage={},workers=[];
+            for(let w=0;w<maxWorkers;w++){
+              let best=-1,bv=0;
+              for(let i=0;i<nC;i++){
+                const v=score(i,coverage);
+                if(v>bv){bv=v;best=i;}
+              }
+              if(best<0||bv===0)break;
+              for(const t of candSlots[best])coverage[t]=(coverage[t]||0)+1;
+              workers.push(best);
             }
-            if(best<0||bv===0)break;
-            for(const t of candSlots[best])coverage[t]=(coverage[t]||0)+1;
-            workers.push(cands[best]);
+            return {workers,coverage,value:0};
+          };
+
+          // Construcción aleatorizada con heap perezoso: agregar cobertura nunca
+          // aumenta la ganancia de un candidato, así que las ganancias guardadas
+          // son cotas superiores y solo se recalcula la del tope del heap.
+          const greedyRCL=(rcl)=>{
+            const coverage={},workers=[];
+            const heap=[];
+            const less=(a,b)=>a[0]<b[0]||(a[0]===b[0]&&a[1]>b[1]);
+            const hswap=(i,j)=>{const t=heap[i];heap[i]=heap[j];heap[j]=t;};
+            const hpush=(n)=>{heap.push(n);let i=heap.length-1;while(i>0){const p=(i-1)>>1;if(less(heap[p],heap[i])){hswap(p,i);i=p;}else break;}};
+            const hpop=()=>{const top=heap[0],last=heap.pop();if(heap.length){heap[0]=last;let i=0;for(;;){const l=2*i+1,r=l+1;let m=i;if(l<heap.length&&less(heap[m],heap[l]))m=l;if(r<heap.length&&less(heap[m],heap[r]))m=r;if(m===i)break;hswap(i,m);i=m;}}return top;};
+            for(let i=0;i<nC;i++)hpush([candSlots[i].length-LAMBDA_OT*candCost[i],i]);
+            for(let w=0;w<maxWorkers;w++){
+              const fresh=[];
+              while(heap.length&&fresh.length<rcl){
+                const top=hpop();
+                const g=score(top[1],coverage);
+                if(g<=0)continue; // ya no aporta: nunca volverá a aportar
+                if(!heap.length||g>=heap[0][0])fresh.push([g,top[1]]);
+                else hpush([g,top[1]]);
+              }
+              if(!fresh.length)break;
+              const k=Math.floor(rnd()*fresh.length);
+              for(let f=0;f<fresh.length;f++)if(f!==k)hpush(fresh[f]);
+              const pick=fresh[k][1];
+              for(const t of candSlots[pick])coverage[t]=(coverage[t]||0)+1;
+              workers.push(pick);
+            }
+            return {workers,coverage,value:0};
+          };
+
+          // Búsqueda local (igual que antes): para cada trabajador, probar
+          // reemplazar su turno por el mejor candidato alternativo dado el resto
+          // de la cobertura. Máx 3 pasadas o hasta convergencia.
+          const localSearch=(sol)=>{
+            const {workers,coverage}=sol;
+            for(let pass=0;pass<3;pass++){
+              let improved=false;
+              for(let w=0;w<workers.length;w++){
+                const cur=workers[w];
+                for(const t of candSlots[cur])coverage[t]=coverage[t]-1; // quita aporte actual
+                let bi=cur,bv=score(cur,coverage);
+                for(let i=0;i<nC;i++){
+                  if(i===cur)continue;
+                  const v=score(i,coverage);
+                  if(v>bv){bv=v;bi=i;}
+                }
+                for(const t of candSlots[bi])coverage[t]=(coverage[t]||0)+1;
+                workers[w]=bi;
+                if(bi!==cur)improved=true;
+              }
+              if(!improved)break;
+            }
+            sol.value=usefulValue(coverage)-LAMBDA_OT*sol.workers.reduce((a,w)=>a+candCost[w],0);
+          };
+
+          const detSol=greedyDet();
+          localSearch(detSol); // = resultado exacto del algoritmo anterior
+          let best=detSol;
+          let bestRcl=null;
+          for(let r=1;r<GRASP_RESTARTS;r++){
+            const s=greedyRCL(2+(r%3)); // intensidad de azar rotativa: top-2/3/4
+            s.value=usefulValue(s.coverage)-LAMBDA_OT*s.workers.reduce((a,w)=>a+candCost[w],0);
+            if(!bestRcl||s.value>bestRcl.value)bestRcl=s;
           }
-          return {workers,coverage};
+          if(bestRcl){
+            localSearch(bestRcl);
+            if(bestRcl.value>best.value)best=bestRcl; // solo si supera estrictamente
+          }
+
+          return {workers:best.workers.map(i=>cands[i]),coverage:best.coverage};
         };
  
+        // Pre-cálculo de descansos del mes por pool → {empId: Set(días de descanso)}.
+        // 'fijo' = escalonado por índice (idéntico al original).
+        // 'demanda' = 1 descanso en cada mitad de la semana (Lun-Mié / Jue-Dom → garantiza
+        //   máx 5 días seguidos), sesgado a los días de MENOR demanda (más gente en los picos).
+        const computeRestDays=(employees,pool)=>{
+          const rest={}; employees.forEach(e=>rest[e.id]=new Set());
+          if(!APLICAR_DESCANSOS)return rest;
+          if(DESCANSO_MODO==='fijo'){
+            for(let d=1;d<=DIAS;d++){const w=wd(d);employees.forEach((emp,idx)=>{if(w===(2*idx)%7||w===(2*idx+1)%7)rest[emp.id].add(d);});}
+            return rest;
+          }
+          // peso por día = máx personas necesarias a la vez (incluye limpieza en operativos)
+          const picoDia={};
+          for(let d=1;d<=DIAS;d++){
+            const dm=computeDemand(d,pool);
+            if(pool==='operativo'){const dl=computeLimpieza(d);for(const t in dl)dm[t]=(dm[t]||0)+dl[t];}
+            let mx=0;for(const t in dm)if(dm[t]>mx)mx=dm[t];picoDia[d]=mx;
+          }
+          const nEmp=employees.length; if(!nEmp)return rest;
+          // agrupar días del mes por semana calendario (mismo lunes de referencia = d - wd(d))
+          const semanas={};
+          for(let d=1;d<=DIAS;d++){const wk=d-wd(d);(semanas[wk]=semanas[wk]||[]).push(d);}
+          let semIdx=0;
+          Object.keys(semanas).map(Number).sort((a,b)=>a-b).forEach(wk=>{
+            const dias=semanas[wk];
+            const asignar=(grupo)=>{ // asigna 1 descanso por empleado dentro de esta mitad
+              if(!grupo.length)return;
+              const cupo={},cont={}; grupo.forEach(d=>{cupo[d]=Math.max(0,nEmp-picoDia[d]);cont[d]=0;});
+              const ord=[...grupo].sort((a,b)=>picoDia[a]-picoDia[b]); // flojos primero
+              for(let k=0;k<nEmp;k++){
+                const emp=employees[(k+semIdx)%nEmp]; // rotar para repartir equitativo entre semanas
+                let elegido=null;
+                for(const d of ord){if(cont[d]<cupo[d]){elegido=d;break;}}
+                if(elegido===null)elegido=ord.reduce((b,d)=>(cont[d]<cont[b]||(cont[d]===cont[b]&&picoDia[d]<picoDia[b]))?d:b,ord[0]);
+                rest[emp.id].add(elegido); cont[elegido]++;
+              }
+            };
+            asignar(dias.filter(d=>wd(d)<=2)); // mitad 1: Lun, Mar, Mié
+            asignar(dias.filter(d=>wd(d)>=3)); // mitad 2: Jue, Vie, Sáb, Dom
+            semIdx++;
+          });
+          return rest;
+        };
+
         const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
         const encargados=this.staff.filter(s=>s.role==='Encargado'&&s.active);
         const operadores=this.staff.filter(s=>s.role==='Operador'&&s.active);
+        const restDays={};
+        [[rampas,'operativo'],[encargados,'encargado'],[operadores,'operador']].forEach(([emps,pl])=>{const r=computeRestDays(emps,pl);for(const id in r)restDays[id]=r[id];});
         const diasTrabajados={}; [...rampas,...encargados,...operadores].forEach(e=>diasTrabajados[e.id]=0);
-        const allDeficits=[]; let demMin=0,covMin=0,gapMin=0;
+        const allDeficits=[]; let demMin=0,covMin=0,gapMin=0,structMin=0,limpDemMin=0,limpGapMin=0;
+        const picoStruct={operativo:0,encargado:0,operador:0}; // máx personas que faltan disponibles en un mismo instante, por pool
         const poolMeta={operativo:{rol:'Operativo',label:'Operativos'},encargado:{rol:'Encargado de Vuelo',label:'Encargados'},operador:{rol:'Operador',label:'Operadores'}};
  
         for(let day=1;day<=DIAS;day++){
@@ -541,23 +838,35 @@
             continue;
           }
  
-          const procesarPool=(employees,pool)=>{
+          const procesarPool=(employees,pool,refuerzo=[],devolverSobrantes=false)=>{
+            // Demanda total = rampa + limpieza (solo operativos). La misma persona cubre
+            // rampa o limpieza según el momento, así que se suman en una sola demanda y el
+            // motor reparte; el tiempo sin limpieza queda automáticamente para rampa.
+            const demandLimp=(pool==='operativo')?computeLimpieza(day):{};
             const demand=computeDemand(day,pool);
+            for(const t in demandLimp)demand[t]=(demand[t]||0)+demandLimp[t];
  
             // ── DESCANSO SEMANAL: 2 días/semana escalonados (máx 5 días seguidos) ──
             const available=[],resting=[];
-            employees.forEach((emp,idx)=>{
-              const w=wd(day);
-              if(APLICAR_DESCANSOS && (w===(2*idx)%7||w===(2*idx+1)%7)) resting.push(emp); else available.push(emp);
+            employees.forEach((emp)=>{
+              if(restDays[emp.id]&&restDays[emp.id].has(day)) resting.push(emp); else available.push(emp);
             });
             resting.forEach(emp=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
               this.currentRoster[emp.id][day]={isDescanso:true,blocks:'Descanso semanal',meal:'-'};
             });
  
-            const {workers,coverage}=assignMixed(demand,available.length);
- 
-            const sorted=[...available].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
+            // Refuerzo: personal de otro rol que sobró ese día y puede cubrir este pool (encargados→rampa).
+            const availableAll=[...available,...refuerzo];
+
+            // Déficit estructural: minutos-persona donde la demanda supera al personal presente
+            for(const t in demand){const ex=demand[t]-availableAll.length;if(ex>0){structMin+=ex;if(ex>picoStruct[pool])picoStruct[pool]=ex;}}
+
+            const poolSeed=[...pool].reduce((h,c)=>(h*31+c.charCodeAt(0))|0,day);
+            const {workers,coverage}=assignMixed(demand,availableAll.length,poolSeed);
+
+            const sorted=[...availableAll].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
+            const sobrantes=[];
             sorted.forEach((emp,i)=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
               if(i<workers.length){
@@ -565,11 +874,15 @@
                 const isSplit=blks.length>1;
                 const totalMin=blks.reduce((a,seg)=>a+(seg[1]-seg[0]),0);
                 const blockStr=blks.map(seg=>`${toHHMM(seg[0])} - ${toHHMM(seg[1])}`).join(' / ');
-                let meal='-';
-                if(!isSplit && totalMin>=300){ const mid=blks[0][0]+Math.floor((blks[0][1]-blks[0][0])/2); meal=`${toHHMM(mid)} - ${toHHMM(mid+45)}`; }
-                const tag = isSplit ? ' (partido)' : (totalMin>=300?' +comida':'');
+                // La hora de comida la define el encargado de turno en el día,
+                // según la operación real (vuelos atrasados, huecos, etc.).
+                const meal=(!isSplit&&totalMin>=300)?'Define encargado':'-';
+                const esApoyo=(pool==='operativo'&&emp.role!=='Operativo');
+                const tag=(isSplit?' (partido)':'')+(esApoyo?' (apoyo rampa)':'');
                 this.currentRoster[emp.id][day]={isDescanso:false,blocks:blockStr+tag,meal};
                 diasTrabajados[emp.id]++;
+              }else if(devolverSobrantes){
+                sobrantes.push(emp); // sin marcar: se intentará reubicar como refuerzo en otro pool
               }else{
                 this.currentRoster[emp.id][day]={isDescanso:true,blocks:'-',meal:'-'};
               }
@@ -578,20 +891,56 @@
             const meta=poolMeta[pool]; let blk=null;
             Object.keys(demand).map(Number).sort((a,b)=>a-b).forEach(t=>{
               const dd=demand[t]||0,cc=coverage[t]||0; demMin+=dd; covMin+=Math.min(dd,cc);
+              // Desglose: la limpieza tiene prioridad sobre la rampa en cada slot.
+              const dl=demandLimp[t]||0;
+              if(dl>0){limpDemMin+=dl; limpGapMin+=dl-Math.min(cc,dl);}
               const g=dd-cc;
-              if(g>0){gapMin+=g;if(blk&&t===blk.last+STEP){blk.last=t;if(g>blk.faltantes)blk.faltantes=g;}else{if(blk)allDeficits.push(blk);blk={day,pool,rol:meta.rol,labelPool:meta.label,start:t,last:t,faltantes:g};}}
+              if(g>0){gapMin+=g;if(blk&&t===blk.last+STEP){blk.last=t;blk.areaMin+=g*STEP;if(g>blk.faltantes)blk.faltantes=g;}else{if(blk)allDeficits.push(blk);blk={day,pool,rol:meta.rol,labelPool:meta.label,start:t,last:t,faltantes:g,areaMin:g*STEP};}}
             });
             if(blk)allDeficits.push(blk);
+            return sobrantes;
           };
- 
-          procesarPool(rampas,'operativo'); procesarPool(encargados,'encargado'); procesarPool(operadores,'operador');
+
+          // Encargados primero: los que sobran (no usados como encargado) refuerzan rampa (apoyo).
+          const sobrEnc=procesarPool(encargados,'encargado',[],true);
+          procesarPool(operadores,'operador');
+          procesarPool(rampas,'operativo',sobrEnc);
+          // ── Etiqueta de limpieza 🧹: marca QUIÉN limpia en cada ventana (modelo compartido).
+          //   Lee el roster YA armado y reparte hasta EQUIPO_LIMPIEZA limpiadores por ventana,
+          //   balanceando para rotar. NO toca turnos, demanda ni cobertura: solo agrega el dato `limpieza`.
+          if(LIMPIEZA_ACTIVA){
+            const limp=computeLimpieza(day);
+            const ls=Object.keys(limp).map(Number).sort((a,b)=>a-b);
+            const wins=[]; let cw=null;
+            ls.forEach(t=>{if(cw&&t===cw.end)cw.end=t+STEP;else{if(cw)wins.push(cw);cw={start:t,end:t+STEP};}});
+            if(cw)wins.push(cw);
+            const onDuty=[];
+            this.staff.forEach(emp=>{
+              const r=this.currentRoster[emp.id]&&this.currentRoster[emp.id][day];
+              if(!r||r.isDescanso)return;
+              if(emp.role!=='Operativo'&&!String(r.blocks).includes('(apoyo rampa)'))return; // solo quien hace rampa
+              const segs=[...String(r.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(m=>{let s=(+m[1])*60+(+m[2]),e=(+m[3])*60+(+m[4]);if(e<=s)e+=1440;return[s,e];});
+              if(segs.length)onDuty.push({emp,segs});
+            });
+            const cmin={},cwins={};
+            wins.forEach(win=>{
+              const present=onDuty.filter(o=>o.segs.some(([s,e])=>this._ovlExtra(win.start,win.end,s,e)));
+              present.sort((a,b)=>(cmin[a.emp.id]||0)-(cmin[b.emp.id]||0)); // el que menos limpió, primero
+              present.slice(0,EQUIPO_LIMPIEZA).forEach(o=>{cmin[o.emp.id]=(cmin[o.emp.id]||0)+(win.end-win.start);(cwins[o.emp.id]=cwins[o.emp.id]||[]).push(win);});
+            });
+            for(const id in cwins){const stl=this.currentRoster[id][day];if(stl)stl.limpieza=cwins[id].map(w=>toHHMM(w.start)+'-'+toHHMM(w.end)).join(', ');}
+          }
           this.staff.filter(s=>s.role==='Supervisor').forEach(emp=>{
             if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
             this.currentRoster[emp.id][day]={isDescanso:false,blocks:'Supervisión general',meal:'-'};
           });
+          // Progreso + respiro: deja que el navegador pinte la barra antes del próximo día.
+          this.calcDia=day; this.calcTotal=DIAS;
+          await new Promise(r=>setTimeout(r));
         }
  
-        this.overtimeAlerts=allDeficits.map(d=>({id:`OT-${d.day}-${d.pool}-${d.start}`,day:d.day,label:`${d.labelPool} ${toHHMM(d.start)}-${toHHMM(d.last+STEP)}`,rol:d.rol,start:d.start,end:d.last+STEP,faltantes:d.faltantes,assignedEmps:this.extraShifts[`OT-${d.day}-${d.pool}-${d.start}`]||[]})).sort((a,b)=>a.day-b.day||a.start-b.start);
+        this.overtimeAlerts=allDeficits.map(d=>({id:`OT-${d.day}-${d.pool}-${d.start}`,day:d.day,label:`${d.labelPool} ${toHHMM(d.start)}-${toHHMM(d.last+STEP)}`,rol:d.rol,start:d.start,end:d.last+STEP,faltantes:d.faltantes,deficitMin:d.areaMin,assignedEmps:this.extraShifts[`OT-${d.day}-${d.pool}-${d.start}`]||[]})).sort((a,b)=>a.day-b.day||a.start-b.start);
+        const activeNames=new Set(this.staff.filter(s=>s.active).map(s=>s.name)); // descartar extras de personas inhabilitadas
         // ── Unificar slots: fusionar cercanos (<=60min) del mismo pool, redondear a :30, mínimo 1h ──
         {
           const MGAP=60, MMIN=60, MRD=30;
@@ -602,7 +951,7 @@
             list.sort((x,y)=>x.start-y.start);
             let cur=null;
             list.forEach(a=>{
-              if(cur && a.start-cur.end<=MGAP){ cur.end=Math.max(cur.end,a.end); cur.faltantes=Math.max(cur.faltantes,a.faltantes); }
+              if(cur && a.start-cur.end<=MGAP){ cur.end=Math.max(cur.end,a.end); cur.faltantes=Math.max(cur.faltantes,a.faltantes); cur.deficitMin=(cur.deficitMin||0)+(a.deficitMin||0); }
               else{ if(cur)merged.push(cur); cur={...a}; }
             });
             if(cur)merged.push(cur);
@@ -612,15 +961,25 @@
             let e=Math.ceil(a.end/MRD)*MRD;
             if(e-s<MMIN)e=s+MMIN;
             const id=`OT-${a.day}-${a.rol}-${s}`.replace(/\s+/g,'_');
-            return {...a, id, start:s, end:e, label:`${a.rol} ${toHHMM(s)}-${toHHMM(e)}`, assignedEmps:this.extraShifts[id]||[]};
+            // personasReales = gente que de verdad hace falta en la franja (área de déficit ÷ su
+            // duración), no el pico de un instante. Siempre <= faltantes (el pico). Mínimo 1.
+            const personasReales=Math.max(1,Math.ceil((a.deficitMin||0)/Math.max(STEP,(e-s))));
+            return {...a, id, start:s, end:e, personasReales, label:`${this.roleLabel(a.rol)} ${toHHMM(s)}-${toHHMM(e)}`, assignedEmps:(this.extraShifts[id]||[]).filter(n=>activeNames.has(n))};
           }).sort((x,y)=>x.day-y.day||x.start-y.start);
         }
         this.buildOvertimeSummary();
-        const pct=demMin===0?100:Math.round(100*covMin/demMin);
+        // "100%" SOLO cuando no falta ni un minuto; si falta algo, mostrar el % real con 1 decimal
+        // (floor para no redondear 99.96→100 y confundir con "ya está completo").
+        const pct=(demMin===0||covMin>=demMin)?100:Math.min(99.9,Math.floor(1000*covMin/demMin)/10);
         const gapHoras=Math.round(gapMin*STEP/60);
-        this.coverageMetrics={percent:pct,deficientHours:gapHoras,hoursIdle:0};
+        const structHoras=Math.round(structMin*STEP/60);
+        const limpHoras=Math.round(limpGapMin*STEP/60);
+        const limpPct=limpDemMin===0?100:Math.round(100*(limpDemMin-limpGapMin)/limpDemMin);
+        const personalPico=picoStruct.operativo+picoStruct.encargado+picoStruct.operador;
+        this.coverageMetrics={percent:pct,deficientHours:gapHoras,hoursIdle:0,limpiezaPct:limpPct,limpiezaDeficit:limpHoras,estructuralHoras:structHoras,personalPico,personalPicoOp:picoStruct.operativo,personalPicoEnc:picoStruct.encargado,personalPicoOpr:picoStruct.operador};
         if(this.overtimeAlerts.length>0){
-          this.smartAlerts=[{type:'warning',message:`Cobertura ${pct}% de ${this.monthName}. Déficit ≈ ${gapHoras} h-persona en ${this.overtimeAlerts.length} franjas. Ver Horas Extras.`}];
+          // Mensaje SIMPLE en Generar turnos: solo cobertura + horas extra totales. El detalle (estructural, limpieza, personal) vive en el panel de Horas Extras.
+          this.smartAlerts=[{type:'warning',message:`Cobertura ${pct}% de ${this.monthName}. Faltan ≈${gapHoras} h extras para llegar al 100%. Ver Horas Extras.`}];
         }else{
           this.smartAlerts=[{type:'success',message:`Cobertura completa (100%) para todo ${this.monthName}.`}];
         }
@@ -629,14 +988,86 @@
       buildOvertimeSummary(){
         const summary={};
         this.overtimeAlerts.forEach(alert=>{
-          (alert.assignedEmps||[]).forEach(empName=>{
+          const emps=alert.assignedEmps||[];
+          if(!emps.length)return;
+          const win=alert.end-alert.start;                  // ventana mostrada de la franja
+          const real=Math.max(5,(alert.deficitMin||0));     // trabajo real de la franja (min-persona)
+          const n=emps.length;
+          const sugg=this.extraSuggestions(alert);           // quiénes tienen turno pegado al hueco
+          emps.forEach(empName=>{
             if(!summary[empName])summary[empName]={name:empName,slots:[],totalMins:0};
-            const dur=alert.end-alert.start;
-            summary[empName].slots.push({day:alert.day,label:alert.label,rol:alert.rol,start:alert.start,end:alert.end,mins:dur});
-            summary[empName].totalMins+=dur;
+            const near=sugg[empName];
+            // Con turno cerca → solo extiende su turno: cobra SU PARTE de los minutos reales.
+            // De la casa (sin turno cerca) → viene especialmente: cobra el bloque completo (mín. la ventana).
+            const mins=near?Math.max(5,Math.round(real/n)):Math.max(win,Math.round(real/n));
+            const label=near?('🔁 Extender turno — '+near.note):(alert.label+' (viene a cubrir)');
+            summary[empName].slots.push({day:alert.day,label,rol:alert.rol,start:alert.start,end:alert.end,mins,esExtensionManual:!!near});
+            summary[empName].totalMins+=mins;
           });
         });
+        // Horas de EXTENSIÓN: lo que cada turno pasa de las 10h se paga como extra y se SUMA
+        // a las horas extra asignadas a mano (un solo total por persona para el pago del mes).
+        this.staff.forEach(emp=>{
+          const r=this.currentRoster[emp.id]; if(!r)return;
+          for(const day in r){
+            const st=r[day]; if(!st||st.isDescanso)continue;
+            const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(mm=>{let s=(+mm[1])*60+(+mm[2]),e=(+mm[3])*60+(+mm[4]);if(e<=s)e+=1440;return e-s;});
+            if(!segs.length)continue;
+            const ext=segs.reduce((a,d)=>a+d,0)-600;
+            if(ext>0){
+              if(!summary[emp.name])summary[emp.name]={name:emp.name,slots:[],totalMins:0,extensionMins:0};
+              summary[emp.name].extensionMins=(summary[emp.name].extensionMins||0)+ext;
+              summary[emp.name].totalMins+=ext;
+              summary[emp.name].slots.push({day:+day,label:'Turno extendido +'+ext+'min',rol:emp.role,start:0,end:0,mins:ext,extension:true});
+            }
+          }
+        });
         this.overtimeSummary=Object.values(summary).sort((a,b)=>b.totalMins-a.totalMins);
+      },
+      // Avance de cobertura de extras: cuánto del déficit ya está tapado por lo que asignaste.
+      // Se mide sobre las MISMAS franjas del panel (Σ deficitMin = el número grande ≈X h) y cuenta
+      // cada franja en proporción a la gente asignada (una cubierta a medias también suma su parte).
+      get extrasProgress(){
+        const alerts=this.overtimeAlerts||[];
+        let totalMin=0, coveredMin=0;
+        alerts.forEach(f=>{
+          const dm=f.deficitMin||0; totalMin+=dm;
+          const need=f.personasReales||f.faltantes||1;
+          const got=Math.min((f.assignedEmps||[]).length, need);
+          coveredMin += dm*(need>0?got/need:0);
+        });
+        const pct = totalMin>0 ? Math.floor(1000*coveredMin/totalMin)/10 : 0;
+        // coveredH/totalH en enteros = mismo redondeo que el número grande (deficientHours),
+        // para que "de ≈Y h" coincida exacto con el total mostrado arriba. El % da el detalle fino.
+        return { coveredH:Math.round(coveredMin/60), totalH:Math.round(totalMin/60), pct:(totalMin>0&&coveredMin>=totalMin)?100:pct };
+      },
+
+      // Comparador contratar vs horas extras. Anclado al mes cargado (déficit/cobertura reales en
+      // la fila +0) y escalando la curva de junio (base 74) para las filas de contratación.
+      // Por cada nivel: costo de extras (déficit·Q), costo de sueldos, total/mes,
+      // y horas extra por persona (para el tope humano).
+      comparatorRows(){
+        const sal=+this.compSalary||0, ot=+this.compOT||0, cap=+this.compCap||0, base=74;
+        // Ancla al mes cargado: la fila +0 ("Nadie") usa el déficit y la cobertura REALES
+        // del mes; las filas de contratación escalan la curva de junio a ese déficit real
+        // (el def proporcional + las ganancias de cobertura de junio sumadas a la base real).
+        const realDef=+this.coverageMetrics.deficientHours||0;
+        const realPct=+this.coverageMetrics.percent||0;
+        const baseDef=this.hiringCurve[0].def, baseCob=this.hiringCurve[0].cob;
+        const k=baseDef>0?realDef/baseDef:0;
+        return this.hiringCurve.map(p=>{
+          const def=Math.round(p.def*k);
+          const cob=p.extra===0?realPct:Math.min(99.9,Math.round((realPct+(p.cob-baseCob))*10)/10);
+          const otCost=def*ot, salCost=p.extra*sal, total=otCost+salCost;
+          const perPerson=Math.round(def/(base+p.extra)*10)/10;
+          return {hires:p.extra, agentes:base+p.extra, cob, def, otCost:Math.round(otCost), salCost:Math.round(salCost), total:Math.round(total), perPerson, humano:cap<=0||perPerson<=cap, estimado:p.extra>0};
+        });
+      },
+      // Mejor opción = la más barata que respeta el tope humano de horas extra por persona.
+      comparatorBest(){
+        const rows=this.comparatorRows().filter(r=>r.humano);
+        if(!rows.length)return null;
+        return rows.reduce((b,r)=>r.total<b.total?r:b,rows[0]);
       },
  
       getRosterStatus(empId,day){
@@ -644,6 +1075,14 @@
         const empRoster=this.currentRoster[empId];
         if(!empRoster)return{isDescanso:true,blocks:'-',meal:'-'};
         return empRoster[d]||{isDescanso:true,blocks:'-',meal:'-'};
+      },
+
+      // Minuto de inicio del turno (para ordenar el listado por hora). Descanso/sin turno → al final.
+      shiftStartMin(emp,day){
+        const st=this.getRosterStatus(emp.id,day);
+        if(st.isDescanso)return 1e9;
+        const m=String(st.blocks).match(/(\d{1,2}):(\d{2})/);
+        return m?(+m[1])*60+(+m[2]):1e9-1;
       },
  
       getEmpMonthView(empId){
@@ -659,13 +1098,75 @@
       openExtrasModal(slot){
         this.selectedExtraSlot=JSON.parse(JSON.stringify(slot));
         this.extrasAssignEmps=[...(slot.assignedEmps||[])];
+        this.extraSugg=this.extraSuggestions(slot);
+        // Orden: sugeridos ⭐ primero (más pegado al hueco = más arriba).
+        // Franja larga (>=3h): después siguen los de DESCANSO (a quien descansa
+        // le conviene una extra larga; quien sale/entra de turno no aguanta
+        // tantas horas más). Franja corta: siguen los que trabajan ese día.
+        const su=(e)=>{const g=this.extraSugg[e.name];return g?g.dist:9999;};
+        const larga=(slot.end-slot.start)>=180;
+        const r=(e)=>{const st=this.getRosterStatus(e.id,slot.day);const desc=st.isDescanso;if(larga)return desc?0:1;return desc?(st.blocks==='Descanso semanal'?1:2):0;};
+        // Solo el MISMO rol puede cubrir la franja: un operativo no cubre a un encargado, etc.
+        const roleMap={'Operativo':'Operativo','Encargado de Vuelo':'Encargado','Operador':'Operador'};
+        const rolStaff=roleMap[slot.rol]||slot.rol;
+        this.extrasCandidates=this.staff.filter(s=>s.active&&s.role===rolStaff).sort((a,b)=>(su(a)-su(b))||(r(a)-r(b)));
+        this.extraConflicts={}; this.extrasCandidates.forEach(e=>{this.extraConflicts[e.id]=this.extraConflict(e,slot);});
         this.extrasModalOpen=true;
       },
+
+      // Sugerencias de horas extras: empleados del mismo rol que ese día ya
+      // están en el aeropuerto pegados al hueco — salen justo antes, entran
+      // justo después, o el hueco cae en la pausa de su turno partido.
+      // Nadie viaja al aeropuerto por una hora suelta.
+      extraSuggestions(slot){
+        const out={};
+        if(!slot)return out;
+        const MAXGAP=30; // espera/anticipo máximo considerado "pegado" (30 min)
+        const fmt=(m)=>{const v=((m%1440)+1440)%1440;return String(Math.floor(v/60)).padStart(2,'0')+':'+String(v%60).padStart(2,'0');};
+        const roleMap={'Operativo':'Operativo','Encargado de Vuelo':'Encargado','Operador':'Operador'};
+        const role=roleMap[slot.rol]||slot.rol;
+        const sS=((slot.start%1440)+1440)%1440, sE=((slot.end%1440)+1440)%1440;
+        this.staff.filter(s=>s.active&&s.role===role).forEach(emp=>{
+          const st=this.getRosterStatus(emp.id,slot.day);
+          if(st.isDescanso)return;
+          const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(m=>{let s=(+m[1])*60+(+m[2]),e=(+m[3])*60+(+m[4]);if(e<=s)e+=1440;return[s,e];});
+          if(!segs.length)return;
+          let note=null,dist=Infinity;
+          segs.forEach(([s,e])=>{
+            const gapB=((sS-e)%1440+1440)%1440; // min entre su salida y el inicio del hueco
+            if(gapB<=MAXGAP&&gapB<dist){dist=gapB;note=`sale a las ${fmt(e)}, ${gapB===0?'justo al inicio del hueco':gapB+' min antes del hueco'}`;}
+            const gapA=((s-sE)%1440+1440)%1440; // min entre el fin del hueco y su entrada
+            if(gapA<=MAXGAP&&gapA<dist){dist=gapA;note=`entra a las ${fmt(s)}, ${gapA===0?'justo al terminar el hueco':gapA+' min después del hueco'}`;}
+          });
+          if(segs.length===2&&sS<=sE&&sS>=segs[0][1]&&sE<=segs[1][0]){dist=-1;note=`el hueco cae en la pausa de su turno partido (${fmt(segs[0][1])} - ${fmt(segs[1][0])})`;}
+          if(note)out[emp.name]={note,dist};
+        });
+        return out;
+      },
  
+      // ¿Dos intervalos [s,e] (en minutos, pueden cruzar medianoche) se traslapan? Normaliza a 0-1440.
+      _ovlExtra(s1,e1,s2,e2){
+        const norm=(s,e)=>{s=((s%1440)+1440)%1440;e=((e%1440)+1440)%1440;if(e===s)return[[0,1440]];return e>s?[[s,e]]:[[s,1440],[0,e]];};
+        const A=norm(s1,e1),B=norm(s2,e2);
+        for(const[a1,a2]of A)for(const[b1,b2]of B)if(a1<b2&&b1<a2)return true;
+        return false;
+      },
+      // Una persona solo puede tomar una extra ANTES de entrar o DESPUÉS de salir de su turno
+      // (no encima). Devuelve el motivo si la franja choca con su turno ese día, o null si se puede.
+      extraConflict(emp,slot){
+        if(!slot)return null;
+        const st=this.getRosterStatus(emp.id,slot.day);
+        if(st.isDescanso)return null; // descansa ese día: no hay turno que choque
+        const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(m=>{let s=(+m[1])*60+(+m[2]),e=(+m[3])*60+(+m[4]);if(e<=s)e+=1440;return[s,e];});
+        for(const[s,e]of segs){if(this._ovlExtra(slot.start,slot.end,s,e))return 'ya trabaja a esa hora';}
+        return null;
+      },
       toggleExtraEmp(empName){
         const idx=this.extrasAssignEmps.indexOf(empName);
-        if(idx>-1)this.extrasAssignEmps.splice(idx,1);
-        else if(this.extrasAssignEmps.length<this.selectedExtraSlot.faltantes)this.extrasAssignEmps.push(empName);
+        if(idx>-1){this.extrasAssignEmps.splice(idx,1);return;}
+        const emp=this.staff.find(s=>s.name===empName);
+        if(emp&&this.extraConflict(emp,this.selectedExtraSlot))return; // choca con su turno: no se asigna
+        if(this.extrasAssignEmps.length<(this.selectedExtraSlot.personasReales||this.selectedExtraSlot.faltantes))this.extrasAssignEmps.push(empName);
       },
  
       saveExtraAssignment(){
@@ -686,8 +1187,9 @@
         if(this.editingFlight.id==='new'){this.editingFlight.id='F'+Date.now();this.flights.unshift(this.editingFlight);}
         else{const i=this.flights.findIndex(f=>f.id===this.editingFlight.id);if(i>-1)this.flights[i]=this.editingFlight;}
         this.editingFlight=null;
+        this.syncAirlineRules(); // si la aerolínea es nueva, que su fila aparezca en Reglas de una vez
       },
-      deleteFlight(id){this.flights=this.flights.filter(f=>f.id!==id);},
+      deleteFlight(id){ if(confirm('¿Eliminar este vuelo?')) this.flights=this.flights.filter(f=>f.id!==id); },
  
       // ── CRUD PERSONAL ──
       addNewStaff(){this.editingStaff={id:'new',name:'',role:'Operativo',active:true,disableReason:''};},
@@ -696,21 +1198,44 @@
         if(this.editingStaff.id==='new'){this.editingStaff.id='EMP-NEW-'+Date.now();this.staff.unshift(this.editingStaff);}
         else{const i=this.staff.findIndex(s=>s.id===this.editingStaff.id);if(i>-1)this.staff[i]=this.editingStaff;}
         this.editingStaff=null;
+        this.persistStaff();
       },
-      deleteStaff(id){this.staff=this.staff.filter(s=>s.id!==id);},
+      deleteStaff(id){
+        const emp=this.staff.find(s=>s.id===id);
+        if(emp&&!confirm(`¿Eliminar a ${emp.name}? Esta acción no se puede deshacer.`))return;
+        this.staff=this.staff.filter(s=>s.id!==id);
+        // Limpiar su rastro de horas extra AL INSTANTE (antes quedaba "fantasma" en el panel y en el
+        // Excel del mes hasta el próximo Generar Turnos, porque las extras se guardan por NOMBRE).
+        if(emp){
+          (this.overtimeAlerts||[]).forEach(a=>{ if(a.assignedEmps)a.assignedEmps=a.assignedEmps.filter(n=>n!==emp.name); });
+          Object.keys(this.extraShifts||{}).forEach(k=>{ this.extraShifts[k]=(this.extraShifts[k]||[]).filter(n=>n!==emp.name); });
+          this.buildOvertimeSummary();
+        }
+        this.persistStaff();
+      },
       openDisableModal(emp){this.selectedStaffToDisable=emp;this.disableReason=emp.disableReason||'';this.disableModalOpen=true;},
       confirmDisable(){
         const i=this.staff.findIndex(s=>s.id===this.selectedStaffToDisable.id);
         if(i>-1){this.staff[i].active=false;this.staff[i].disableReason=this.disableReason;}
         this.disableModalOpen=false;
+        this.persistStaff();
       },
-      enableStaff(emp){const i=this.staff.findIndex(s=>s.id===emp.id);if(i>-1){this.staff[i].active=true;this.staff[i].disableReason='';}},
+      enableStaff(emp){const i=this.staff.findIndex(s=>s.id===emp.id);if(i>-1){this.staff[i].active=true;this.staff[i].disableReason='';}this.persistStaff();},
  
       // ── FILTROS ──
       getFilteredFlights(){
         let r=this.flights;
         if(this.flightFilter)r=r.filter(f=>f.airline===this.flightFilter);
         if(this.flightDayFilter)r=r.filter(f=>f.days.includes(parseInt(this.flightDayFilter)));
+        // Orden SOLO de la vista (no afecta el cálculo: el motor usa this.flights aparte).
+        // '' = como viene en el Excel (por aerolínea). Clono antes de ordenar para no mutar el estado.
+        if(this.flightSort){
+          const toMin=(t)=>{const m=String(t||'').match(/(\d{1,2}):(\d{2})/);return m?(+m[1])*60+(+m[2]):1e9;};
+          r=[...r];
+          if(this.flightSort==='eta')r.sort((a,b)=>toMin(a.eta)-toMin(b.eta));
+          else if(this.flightSort==='flightNo')r.sort((a,b)=>String(a.flightNo||'').localeCompare(String(b.flightNo||''),undefined,{numeric:true}));
+          else if(this.flightSort==='airline')r.sort((a,b)=>String(a.airline||'').localeCompare(String(b.airline||'')));
+        }
         return r;
       },
       getFilteredStaff(){
@@ -734,13 +1259,25 @@
         reader.readAsArrayBuffer(file);
         event.target.value=null;
       },
-      processParsedRows(rows){
+      async processParsedRows(rows){
         try{
           if(rows.length<3){this.csvStatus='Archivo muy corto.';return;}
           // Fila 0: JUNIO, null, null, null, 1, 2, 3... (números de día desde col 4)
           // Fila 1: AEROLINEA, TIPO, ETA, ETD, LUNES, MARTES...
           // Fila 2+: datos
           const firstRow=rows[0];
+          // Detectar el mes (y año si viene) del encabezado → fija el mes de trabajo automáticamente.
+          const MESES=['ENERO','FEBRERO','MARZO','ABRIL','MAYO','JUNIO','JULIO','AGOSTO','SEPTIEMBRE','OCTUBRE','NOVIEMBRE','DICIEMBRE'];
+          let detMonth=0,detYear=0;
+          [rows[0],rows[1]].forEach(rr=>{ if(!rr)return; rr.forEach(cell=>{ const s=String(cell==null?'':cell).toUpperCase(); MESES.forEach((mn,mi)=>{ if(s.includes(mn))detMonth=mi+1; }); const ym=s.match(/(20\d{2})/); if(ym)detYear=parseInt(ym[1]); }); });
+          if(detMonth){
+            const monthChanged=(detMonth!==this.selectedMonth)||(detYear&&detYear!==this.selectedYear);
+            this.selectedMonth=detMonth; this.selectedDay=1; if(detYear)this.selectedYear=detYear; this.persistMonthPref();
+            // Si el Excel es de OTRO mes, cargar primero lo que haya guardado de ese mes en la nube
+            // (igual que el selector de mes manual) — si no, las reglas/roster/extras que estaban
+            // en memoria del mes anterior quedaban "pegadas" al mes recién detectado.
+            if(monthChanged) await this.loadFromFirestore({resetIfMissing:true});
+          }
           const dayColIdx=[],dayNums=[];
           for(let i=4;i<firstRow.length;i++){
             const v=parseInt(firstRow[i]);
@@ -767,7 +1304,7 @@
             const row=rows[i];
             if(!row||!row[0])continue;
             const airline=String(row[0]).trim().toUpperCase();
-            if(!airline||airline==='AEROLINEA'||airline==='JUNIO')continue;
+            if(!airline||airline==='AEROLINEA'||MESES.includes(airline))continue;
             // Nuevo formato: col0=Aerolínea, col1=Tipo, col2=ETA, col3=ETD, col4+=días
             const tipo=String(row[1]||'TURN').trim().toUpperCase();
             const eta=fmt(row[2]);
@@ -789,6 +1326,7 @@
           }
           if(parsed.length>0){
             this.flights=parsed;
+            this.syncAirlineRules();
             this.scheduleGenerated=false;
             this.currentRoster={};
             this.csvStatus=`✅ ${count} vuelos cargados (${[...new Set(parsed.map(f=>f.type))].join(', ')}). Regenerá los turnos.`;
@@ -804,10 +1342,18 @@
       // ── EXPORTAR ──
       exportRoster(){
         const data=[];
-        const pool=this.getFilteredStaff().filter(s=>s.role!=='Supervisor');
+        // Horas extras ASIGNADAS a mano ese día, por persona (para mostrarlas junto al turno).
+        const extrasByName={};
+        (this.overtimeAlerts||[]).filter(a=>a.day===this.selectedDay).forEach(a=>{
+          (a.assignedEmps||[]).forEach(n=>{(extrasByName[n]=extrasByName[n]||[]).push(this.toHHMM(a.start)+'-'+this.toHHMM(a.end));});
+        });
+        // TODO el personal activo, sin importar lo que haya en el buscador "Buscar empleado" de la
+        // pantalla (antes usaba getFilteredStaff() y el Excel del día podía omitir gente en silencio
+        // si quedaba texto en ese buscador). Igual criterio que el Excel del mes (solo activos).
+        const pool=this.staff.filter(s=>s.role!=='Supervisor'&&s.active).sort((a,b)=>this.shiftStartMin(a,this.selectedDay)-this.shiftStartMin(b,this.selectedDay));
         pool.forEach(emp=>{
           const st=this.getRosterStatus(emp.id,this.selectedDay);
-          data.push({'ID':emp.id,'Nombre':emp.name,'Rol':emp.role,'Estado':st.isDescanso?'Libre':'Trabajando','Turno':st.blocks,'Comida':st.meal});
+          data.push({'ID':emp.id,'Nombre':emp.name,'Rol':this.roleLabel(emp.role),'Estado':st.isDescanso?'Libre':'Trabajando','Turno':st.blocks,'Limpieza':st.limpieza||'','Comida':st.meal,'Hora extra':(extrasByName[emp.name]||[]).join(', ')});
         });
         const ws=XLSX.utils.json_to_sheet(data);
         const wb=XLSX.utils.book_new();
@@ -819,7 +1365,7 @@
         const data=[];
         const pool=this.staff.filter(s=>s.role!=='Supervisor'&&s.active);
         pool.forEach(emp=>{
-          let row={'Nombre':emp.name,'Rol':emp.role};
+          let row={'Nombre':emp.name,'Rol':this.roleLabel(emp.role)};
           for(let d=1;d<=this.daysInMonth;d++){
             const st=this.getRosterStatus(emp.id,d);
             row[`Día ${d}`]=st.isDescanso?'LIBRE':st.blocks;
@@ -829,10 +1375,16 @@
         const ws=XLSX.utils.json_to_sheet(data);
         const wb=XLSX.utils.book_new();
         XLSX.utils.book_append_sheet(wb,ws,`Turnos_${this.monthName}_Completo`);
+        // Hoja 2: horas extras del mes (asignadas a mano + extensión de turnos >10h), total por persona para el pago.
+        const extra=(this.overtimeSummary||[]).map(r=>({'Nombre':r.name,'Total horas extra':Math.floor(r.totalMins/60)+'h '+(r.totalMins%60)+'min','Minutos totales':r.totalMins,'Detalle':(r.slots||[]).map(s=>'Día '+s.day+' '+s.label).join(', ')}));
+        const wsE=XLSX.utils.json_to_sheet(extra.length?extra:[{'Nombre':'—','Total horas extra':'Sin horas extras asignadas','Minutos totales':0,'Detalle':''}]);
+        XLSX.utils.book_append_sheet(wb,wsE,'Horas extras');
         XLSX.writeFile(wb,`LAATS_${this.monthName}_Mensual.xlsx`);
       },
  
       // ── HELPERS UI ──
+      // Nombre del rol para MOSTRAR (el valor interno sigue siendo 'Operativo').
+      roleLabel(r){ return r==='Operativo'?'Agente de rampa':r; },
       getRoleColor(r){
         if(r==='Encargado')return'pill-blue';
         if(r==='Operador')return'pill-green';
@@ -996,7 +1548,40 @@
           </div>
         </div>
       </div>
- 
+
+      <!-- Mes de trabajo -->
+      <div class="card p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <div class="text-sm font-bold text-primary">📅 Mes de trabajo</div>
+          <div class="text-xs text-secondary">Se toma del Excel al cargarlo. Cambialo aquí para ver otro mes guardado.</div>
+        </div>
+        <div class="flex items-center gap-2">
+          <select x-model.number="selectedMonth" @change="selectMonth()" class="input-field w-40">
+            <option value="1">Enero</option>
+            <option value="2">Febrero</option>
+            <option value="3">Marzo</option>
+            <option value="4">Abril</option>
+            <option value="5">Mayo</option>
+            <option value="6">Junio</option>
+            <option value="7">Julio</option>
+            <option value="8">Agosto</option>
+            <option value="9">Septiembre</option>
+            <option value="10">Octubre</option>
+            <option value="11">Noviembre</option>
+            <option value="12">Diciembre</option>
+          </select>
+          <select x-model.number="selectedYear" @change="selectMonth()" class="input-field w-28">
+            <option value="2024">2024</option>
+            <option value="2025">2025</option>
+            <option value="2026">2026</option>
+            <option value="2027">2027</option>
+            <option value="2028">2028</option>
+            <option value="2029">2029</option>
+            <option value="2030">2030</option>
+          </select>
+        </div>
+      </div>
+
       <!-- KPIs -->
       <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
         <div class="card p-5">
@@ -1048,7 +1633,7 @@
                 <span>🛫 <span class="mono font-medium text-primary" x-text="f.etd"></span></span>
               </div>
               <div class="mt-2 text-xs text-secondary">
-                Personal: <span class="font-semibold text-primary" x-text="(airlineRules[f.airline]?.agentesRampa||7)+' rampa · '+(airlineRules[f.airline]?.receptores||2)+' rec · '+(airlineRules[f.airline]?.maleteros||3)+' mal'"></span>
+                Personal: <span class="font-semibold text-primary" x-text="((airlineRules[f.airline]&&airlineRules[f.airline].receptores!=null?airlineRules[f.airline].receptores:(f.airline==='AA'?4:2))+' receptores · '+(airlineRules[f.airline]&&airlineRules[f.airline].basePorTipo&&airlineRules[f.airline].basePorTipo[f.type]!=null?airlineRules[f.airline].basePorTipo[f.type]:(((algorithmRules.basePorTipo||{})[f.type])||7))+' base ('+f.type+')')"></span>
               </div>
             </div>
           </template>
@@ -1092,6 +1677,15 @@
             <select x-model="flightDayFilter" class="input-field w-28">
               <option value="">Todo el mes</option>
               <template x-for="d in daysInMonth"><option :value="d" x-text="'Día '+d"></option></template>
+            </select>
+          </div>
+          <div>
+            <label class="text-xs font-600 text-secondary block mb-1.5">Ordenar por</label>
+            <select x-model="flightSort" class="input-field w-44">
+              <option value="">Como viene (aerolínea)</option>
+              <option value="eta">Hora (ETA)</option>
+              <option value="flightNo">Vuelo</option>
+              <option value="airline">Aerolínea A–Z</option>
             </select>
           </div>
         </div>
@@ -1157,7 +1751,7 @@
               <template x-for="emp in getFilteredStaff()" :key="emp.id">
                 <tr class="flight-row" :class="!emp.active&&'opacity-50'">
                   <td class="p-4"><div class="font-semibold text-primary text-sm" x-text="emp.name"></div><div class="text-xs text-tertiary mono" x-text="emp.id"></div></td>
-                  <td class="p-4"><span :class="getRoleColor(emp.role)" x-text="emp.role"></span></td>
+                  <td class="p-4"><span :class="getRoleColor(emp.role)" x-text="roleLabel(emp.role)"></span></td>
                   <td class="p-4 text-center"><span x-show="emp.active" class="pill-green">Activo</span><span x-show="!emp.active" class="pill-red">Inactivo</span></td>
                   <td class="p-4 text-xs text-secondary mobile-hide" x-text="emp.disableReason||'—'"></td>
                   <td class="p-4"><div class="flex gap-2 justify-end flex-wrap">
@@ -1185,33 +1779,49 @@
               <div><label class="text-xs font-600 text-secondary block mb-1.5">Encargados por vuelo</label><input type="number" x-model.number="algorithmRules.encargadosPorVuelo" class="input-field"></div>
               <div><label class="text-xs font-600 text-secondary block mb-1.5">Operadores por vuelo</label><input type="number" x-model.number="algorithmRules.operadoresPorVuelo" class="input-field"></div>
             </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Min. antes del vuelo</label><input type="number" x-model.number="algorithmRules.minutosAntesVuelo" class="input-field"></div>
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Máx. horas diarias</label><input type="number" x-model.number="algorithmRules.maxHorasDiarias" class="input-field"></div>
+            <div>
+              <label class="text-xs font-600 text-secondary block mb-1.5">Personal base por tipo de vuelo (rampa + maleteros — la ola principal)</label>
+              <div class="grid grid-cols-3 gap-3">
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Despacho</label><input type="number" x-model.number="algorithmRules.basePorTipo.DESPACHO" class="input-field"></div>
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Turn</label><input type="number" x-model.number="algorithmRules.basePorTipo.TURN" class="input-field"></div>
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Recepción</label><input type="number" x-model.number="algorithmRules.basePorTipo.RECEPCION" class="input-field"></div>
+              </div>
             </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Mín. horas por bloque</label><input type="number" x-model.number="algorithmRules.minHorasBloque" class="input-field"></div>
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Descanso partido mín. (min)</label><input type="number" x-model.number="algorithmRules.minDescansoPartido" class="input-field"></div>
+            <div>
+              <label class="text-xs font-600 text-secondary block mb-1.5">Minutos antes del vuelo (cuándo entra cada grupo)</label>
+              <div class="grid grid-cols-3 gap-3">
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Receptores</label><input type="number" x-model.number="algorithmRules.minAntesReceptores" class="input-field"></div>
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Base</label><input type="number" x-model.number="algorithmRules.minAntesBase" class="input-field"></div>
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Enc./Oper.</label><input type="number" x-model.number="algorithmRules.minAntesEncOp" class="input-field"></div>
+              </div>
             </div>
-            <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Duración comida (min)</label><input type="number" x-model.number="algorithmRules.minutosComida" class="input-field"></div>
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Turno mín. para comida (min)</label><input type="number" x-model.number="algorithmRules.umbralComida" class="input-field"></div>
-            </div>
-            <div><label class="text-xs font-600 text-secondary block mb-1.5">Umbral agrupación vuelos (min)</label><input type="number" x-model.number="algorithmRules.umbralAgrupar" class="input-field"><p class="text-xs text-tertiary mt-1">Vuelos con menos de X minutos entre ellos se cubren con el mismo personal.</p></div>
+            <p class="text-xs text-tertiary">Los turnos son de 10h (corrido o partido con gap de 3h), fijo por diseño.</p>
           </div>
         </div>
         <div class="card p-6">
           <h3 class="font-bold text-primary text-base mb-1">Personal por Aerolínea</h3>
-          <p class="text-xs text-secondary mb-5">Requerimiento de personal por vuelo según aerolínea.</p>
-          <div class="space-y-3">
-            <template x-for="[key,val] in Object.entries(airlineRules)">
+          <p class="text-xs text-secondary mb-5">Receptores por vuelo (la ola que entra antes). El resto de operativos sale del "base por tipo". Las aerolíneas nuevas aparecen solas al cargar el Excel.</p>
+          <div class="space-y-2">
+            <template x-for="[key,val] in Object.entries(airlineRules)" :key="key">
               <div class="p-3 rounded-xl" style="border:1px solid var(--border);background:var(--surface2)">
-                <div class="font-semibold text-primary text-sm mb-3" x-text="val.name"></div>
-                <div class="grid grid-cols-3 gap-2">
-                  <div><label class="text-[10px] font-600 text-secondary uppercase block mb-1">Ag. Rampa</label><input type="number" x-model.number="val.agentesRampa" class="input-field text-sm py-1.5"></div>
-                  <div><label class="text-[10px] font-600 text-secondary uppercase block mb-1">Receptores</label><input type="number" x-model.number="val.receptores" class="input-field text-sm py-1.5"></div>
-                  <div><label class="text-[10px] font-600 text-secondary uppercase block mb-1">Maleteros</label><input type="number" x-model.number="val.maleteros" class="input-field text-sm py-1.5"></div>
+                <div class="flex items-center justify-between gap-3">
+                  <span class="font-semibold text-primary text-sm truncate" x-text="val.name||key"></span>
+                  <div class="flex items-center gap-2 shrink-0">
+                    <label class="text-[10px] font-600 text-secondary uppercase">Receptores</label>
+                    <input type="number" x-model.number="val.receptores" class="input-field text-sm py-1.5" style="width:84px">
+                    <button @click="toggleAirlineAdv(key)" class="text-[10px] font-600 uppercase px-2 py-1 rounded-lg" style="border:1px solid var(--border);color:var(--text-secondary)" x-text="airlineAdvOpen[key]?'Avanzado ▴':'Avanzado ▾'"></button>
+                  </div>
                 </div>
+                <template x-if="airlineAdvOpen[key]">
+                  <div class="mt-3 pt-3" style="border-top:1px dashed var(--border)">
+                    <div class="text-[10px] text-tertiary uppercase mb-2">Base de esta aerolínea — vacío = usa el global</div>
+                    <div class="grid grid-cols-3 gap-2">
+                      <div><label class="text-[10px] text-tertiary uppercase block mb-1">Despacho</label><input type="number" x-model.number="val.basePorTipo.DESPACHO" :placeholder="(algorithmRules.basePorTipo||{}).DESPACHO" class="input-field text-sm py-1.5"></div>
+                      <div><label class="text-[10px] text-tertiary uppercase block mb-1">Turn</label><input type="number" x-model.number="val.basePorTipo.TURN" :placeholder="(algorithmRules.basePorTipo||{}).TURN" class="input-field text-sm py-1.5"></div>
+                      <div><label class="text-[10px] text-tertiary uppercase block mb-1">Recepción</label><input type="number" x-model.number="val.basePorTipo.RECEPCION" :placeholder="(algorithmRules.basePorTipo||{}).RECEPCION" class="input-field text-sm py-1.5"></div>
+                    </div>
+                  </div>
+                </template>
               </div>
             </template>
           </div>
@@ -1225,6 +1835,17 @@
         <div>
           <h2 class="text-xl font-bold text-primary">Generar Turnos</h2>
           <p class="text-sm text-secondary mt-0.5" x-text="monthName+' '+selectedDay+', '+selectedYear"></p>
+          <div class="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+            <span class="text-xs font-600 text-secondary">Modo:</span>
+            <label class="flex items-center gap-1.5 cursor-pointer">
+              <input type="radio" name="shiftMode" value="fixed10" x-model="shiftMode" class="cursor-pointer">
+              <span>Fijos 10h corridos/partidos</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-not-allowed opacity-50" title="Próximamente — Fase 2">
+              <input type="radio" name="shiftMode" value="variable812" disabled class="cursor-not-allowed">
+              <span>Variables 8h–12h <span class="text-xs">(próximamente)</span></span>
+            </label>
+          </div>
         </div>
         <div class="flex gap-2 flex-wrap">
           <button @click="generateTurnos()" class="btn-primary" x-text="scheduleGenerated?'🔄 Recalcular':'🚀 Generar turnos'"></button>
@@ -1233,12 +1854,26 @@
         </div>
       </div>
  
-      <div x-show="generationProgress!==null" class="card p-5">
-        <div class="flex justify-between mb-2">
-          <span class="text-sm font-medium text-secondary">Calculando...</span>
-          <span class="text-sm font-bold" style="color:#3DBF82" x-text="generationProgress+'%'"></span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" :style="`width:${generationProgress}%`"></div></div>
+      <div x-show="generationProgress!==null || calculando" class="card p-5">
+        <template x-if="!calculando">
+          <div>
+            <div class="flex justify-between mb-2">
+              <span class="text-sm font-medium text-secondary">Calculando...</span>
+              <span class="text-sm font-bold" style="color:#3DBF82" x-text="generationProgress+'%'"></span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" :style="`width:${generationProgress}%`"></div></div>
+          </div>
+        </template>
+        <template x-if="calculando">
+          <div>
+            <div class="flex justify-between mb-2">
+              <span class="text-sm font-medium text-secondary" x-text="calcDia>0?('⏳ Calculando… Día '+calcDia+' de '+calcTotal):'⏳ Preparando el cálculo…'"></span>
+              <span class="text-sm font-bold" style="color:#3DBF82" x-text="(calcTotal>0?Math.round(calcDia/calcTotal*100):0)+'%'"></span>
+            </div>
+            <div class="progress-bar"><div class="progress-fill" :style="`width:${calcTotal>0?Math.round(calcDia/calcTotal*100):0}%`"></div></div>
+            <div class="text-xs text-tertiary mt-2"><strong>No cierres la pestaña</strong> (si el navegador pregunta, elegí “Esperar”). Avanza de a un día — es normal que se trabe unos segundos entre cada uno.</div>
+          </div>
+        </template>
       </div>
  
       <template x-if="scheduleGenerated">
@@ -1268,12 +1903,17 @@
               <th class="text-left p-3 text-xs font-600 text-secondary uppercase mobile-hide">Comida</th>
             </tr></thead>
             <tbody>
-              <template x-for="emp in getFilteredStaff().filter(s=>s.role!=='Supervisor')" :key="emp.id">
+              <template x-for="emp in getFilteredStaff().filter(s=>s.role!=='Supervisor').sort((a,b)=>shiftStartMin(a,selectedDay)-shiftStartMin(b,selectedDay))" :key="emp.id">
                 <tr class="flight-row">
                   <td class="p-3"><div class="font-semibold text-primary text-xs" x-text="emp.name"></div><div class="text-[10px] text-tertiary mono" x-text="emp.id"></div></td>
-                  <td class="p-3 mobile-hide"><span :class="getRoleColor(emp.role)" x-text="emp.role"></span></td>
+                  <td class="p-3 mobile-hide"><span :class="getRoleColor(emp.role)" x-text="roleLabel(emp.role)"></span></td>
                   <td class="p-3 text-center"><span :class="getRosterStatus(emp.id,selectedDay).isDescanso?'pill-gray':'pill-green'" x-text="getRosterStatus(emp.id,selectedDay).isDescanso?'Libre':'Trabajando'"></span></td>
-                  <td class="p-3 text-xs mono text-primary" x-text="getRosterStatus(emp.id,selectedDay).blocks"></td>
+                  <td class="p-3 text-xs mono text-primary">
+                    <div x-text="getRosterStatus(emp.id,selectedDay).blocks"></div>
+                    <template x-if="getRosterStatus(emp.id,selectedDay).limpieza">
+                      <div class="mt-0.5" style="color:#0EA5E9" x-text="'🧹 limpia: '+getRosterStatus(emp.id,selectedDay).limpieza"></div>
+                    </template>
+                  </td>
                   <td class="p-3 text-xs mono text-secondary mobile-hide" x-text="getRosterStatus(emp.id,selectedDay).meal||'—'"></td>
                 </tr>
               </template>
@@ -1294,7 +1934,7 @@
                 <tr class="flight-row">
                   <td class="sticky-col p-2 font-semibold text-primary truncate max-w-[150px]" style="border-right:1px solid var(--border)">
                     <div x-text="emp.name" class="truncate text-xs"></div>
-                    <div x-text="emp.role" class="text-[10px] text-secondary"></div>
+                    <div x-text="roleLabel(emp.role)" class="text-[10px] text-secondary"></div>
                   </td>
                   <template x-for="d in daysInMonth">
                     <td class="p-1 text-center" style="border-left:1px solid var(--border)">
@@ -1316,7 +1956,7 @@
             <select x-model="selectedEmp" class="input-field max-w-sm">
               <option value="">-- Selecciona un empleado --</option>
               <template x-for="emp in staff.filter(s=>s.role!=='Supervisor')" :key="emp.id">
-                <option :value="emp.id" x-text="emp.name+' ('+emp.role+')'"></option>
+                <option :value="emp.id" x-text="emp.name+' ('+roleLabel(emp.role)+')'"></option>
               </template>
             </select>
           </div>
@@ -1360,8 +2000,108 @@
       <div class="card p-6">
         <h2 class="text-xl font-bold text-primary mb-1">Horas Extras</h2>
         <p class="text-sm text-secondary">Vuelos con déficit de personal. Asigna manualmente quién cubre cada posición faltante.</p>
+        <div x-show="scheduleGenerated" class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
+          <div class="rounded-xl p-4" style="background:var(--surface2);border:1px solid var(--border)">
+            <div class="text-3xl font-bold" style="color:#F59E0B" x-text="'≈'+coverageMetrics.deficientHours+' h'"></div>
+            <div class="text-xs text-secondary mt-1">Horas extra totales del mes (para cubrir todo el déficit)</div>
+          </div>
+          <div class="rounded-xl p-4" style="background:var(--surface2);border:1px solid var(--border)">
+            <div class="text-3xl font-bold" style="color:#F59E0B" x-text="'+'+(coverageMetrics.personalPico||0)+' a la vez'"></div>
+            <div class="text-xs text-secondary mt-1">
+              Faltan en el <b>momento más cargado</b> del mes (dura minutos). <b>No es cuánta gente contratar</b> — para eso usá el comparador de abajo.
+              <span x-show="(coverageMetrics.personalPico||0)>0" class="block mt-0.5" x-text="'('+(coverageMetrics.personalPicoOp||0)+' agentes de rampa · '+(coverageMetrics.personalPicoEnc||0)+' encargados · '+(coverageMetrics.personalPicoOpr||0)+' operadores)'"></span>
+            </div>
+          </div>
+        </div>
+        <p x-show="scheduleGenerated && overtimeAlerts.length>0" class="text-xs text-secondary mt-3">
+          De esas, ≈<span x-text="coverageMetrics.estructuralHoras||0"></span> h son estructurales (faltan cabezas, ni el mejor horario las cubre).
+          <span x-show="(coverageMetrics.limpiezaDeficit!==undefined)">Limpieza cubierta <span x-text="coverageMetrics.limpiezaPct"></span>%.</span>
+        </p>
+        <div x-show="scheduleGenerated && extrasProgress.totalH>0" class="mt-4">
+          <div class="flex justify-between items-center mb-1.5 gap-2 flex-wrap">
+            <span class="text-xs font-600 text-secondary uppercase">Avance: extras ya cubiertas</span>
+            <span class="text-sm font-bold" style="color:#3DBF82" x-text="'cubierto ≈'+extrasProgress.coveredH+' de ≈'+extrasProgress.totalH+' h ('+extrasProgress.pct+'%)'"></span>
+          </div>
+          <div class="progress-bar"><div class="progress-fill" :style="`width:${extrasProgress.pct}%`"></div></div>
+          <div class="text-[11px] text-tertiary mt-1">Sube a medida que asignás gente a las franjas (cuenta también las cubiertas en parte).</div>
+        </div>
       </div>
- 
+
+      <!-- Horas extras acumuladas por persona (arriba, compacto, con ver detalles) -->
+      <div x-show="scheduleGenerated && overtimeSummary.length>0" class="card p-5">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold text-primary">Horas extras acumuladas del mes</h3>
+          <span class="text-xs text-secondary" x-text="overtimeSummary.length+' personas'"></span>
+        </div>
+        <div class="space-y-0 max-h-96 overflow-y-auto pr-1">
+          <template x-for="row in overtimeSummary" :key="row.name">
+            <div style="border-bottom:1px solid var(--border)">
+              <div class="flex items-center justify-between gap-2 py-2">
+                <span class="text-sm font-semibold text-primary truncate" x-text="row.name"></span>
+                <div class="flex items-center gap-2 shrink-0">
+                  <span class="extras-badge" x-text="Math.floor(row.totalMins/60)+'h '+(row.totalMins%60)+'min'"></span>
+                  <button @click="expandedSummary=(expandedSummary===row.name?null:row.name)" class="btn-outline text-xs"
+                    x-text="expandedSummary===row.name?'Ocultar':'Ver detalles'"></button>
+                </div>
+              </div>
+              <div x-show="expandedSummary===row.name" class="pb-3 pl-1 text-xs space-y-2">
+                <div x-show="row.slots.some(s=>!s.extension)">
+                  <div class="font-semibold text-secondary mb-0.5">Asignadas por vos:</div>
+                  <div class="text-secondary" x-text="row.slots.filter(s=>!s.extension).map(s=>'Día '+s.day+' '+s.label).join(' · ')"></div>
+                </div>
+                <div x-show="row.slots.some(s=>s.extension)">
+                  <div class="font-semibold text-secondary mb-0.5">Extensiones automáticas del turno (el motor lo estiró para tapar huecos):</div>
+                  <div class="text-secondary" x-text="row.slots.filter(s=>s.extension).map(s=>'Día '+s.day+' (+'+s.mins+'min)').join(' · ')"></div>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <!-- Comparador: contratar vs horas extras -->
+      <div x-show="scheduleGenerated" class="card p-5">
+        <h3 class="font-bold text-primary mb-1">Comparador: ¿contratar o pagar horas extras?</h3>
+        <p class="text-xs text-secondary mb-3">La fila <b>“Nadie”</b> usa el déficit real de <span x-text="monthName"></span>. Las filas de contratación (≈) son estimación: la curva medida en junio, escalada a tu mes. Meté tus números y mirá qué conviene.</p>
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+          <div><label class="text-xs text-secondary block mb-1">Sueldo mensual (Q)</label><input type="number" x-model.number="compSalary" class="input-field"></div>
+          <div><label class="text-xs text-secondary block mb-1">Hora extra (Q)</label><input type="number" x-model.number="compOT" class="input-field"></div>
+          <div><label class="text-xs text-secondary block mb-1">Tope humano (h extra / persona / mes)</label><input type="number" x-model.number="compCap" class="input-field"></div>
+        </div>
+        <template x-if="comparatorBest()">
+          <div class="alert-success text-sm mb-3">
+            <b>Recomendado:</b> contratar <b x-text="comparatorBest().hires===0?'a nadie':('+'+comparatorBest().hires)"></b> y cubrir el resto con horas extras →
+            total <b x-text="'Q'+comparatorBest().total.toLocaleString()"></b>/mes
+            (cobertura <span x-text="comparatorBest().cob"></span>%, <span x-text="comparatorBest().perPerson"></span> h extra por persona).
+          </div>
+        </template>
+        <div class="overflow-x-auto">
+          <table class="w-full text-xs">
+            <thead><tr style="border-bottom:1px solid var(--border)">
+              <th class="text-left p-2 text-secondary uppercase">Contratar</th>
+              <th class="text-right p-2 text-secondary uppercase">Cobertura</th>
+              <th class="text-right p-2 text-secondary uppercase">Costo extras</th>
+              <th class="text-right p-2 text-secondary uppercase">Costo sueldos</th>
+              <th class="text-right p-2 text-secondary uppercase">Total/mes</th>
+              <th class="text-right p-2 text-secondary uppercase">h-extra/pers.</th>
+            </tr></thead>
+            <tbody>
+              <template x-for="r in comparatorRows()" :key="r.hires">
+                <tr class="flight-row" :style="(comparatorBest()&&r.hires===comparatorBest().hires)?'background:var(--green-light)':''">
+                  <td class="p-2 font-semibold text-primary" x-text="r.hires===0?'Nadie (solo extras)':'+'+r.hires+' ('+r.agentes+')'"></td>
+                  <td class="p-2 text-right text-secondary" x-text="(r.estimado?'≈':'')+r.cob+'%'"></td>
+                  <td class="p-2 text-right text-secondary" x-text="'Q'+r.otCost.toLocaleString()"></td>
+                  <td class="p-2 text-right text-secondary" x-text="'Q'+r.salCost.toLocaleString()"></td>
+                  <td class="p-2 text-right font-semibold text-primary" x-text="'Q'+r.total.toLocaleString()"></td>
+                  <td class="p-2 text-right" :style="r.humano?'color:var(--text-secondary)':'color:#EF4444;font-weight:600'" x-text="r.perPerson+(r.humano?'':' ⚠')"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <p class="text-xs text-secondary mt-2">≈ = cobertura estimada (curva de junio escalada). ⚠ = supera tu tope humano de horas extra por persona. La fila verde es la recomendada.</p>
+      </div>
+
       <div x-show="!scheduleGenerated" class="card p-8 text-center" style="border:2px dashed var(--border)">
         <p class="text-secondary text-sm">Genera los turnos primero para ver las horas extras necesarias.</p>
       </div>
@@ -1380,7 +2120,7 @@
                 <span class="text-xs text-secondary" x-text="dia.vuelos+' vuelos'"></span>
               </div>
               <span x-show="dia.cubierto" class="pill-green">✅ Día cubierto</span>
-              <span x-show="!dia.cubierto" class="extras-badge" x-text="'🔴 Faltan '+dia.faltanTotal+' posiciones'"></span>
+              <span x-show="!dia.cubierto" class="extras-badge" x-text="'🔴 Faltan ≈'+dia.horasTotal+' h extras'"></span>
             </div>
             <div class="space-y-2">
               <template x-for="franja in dia.franjas" :key="franja.id">
@@ -1388,9 +2128,10 @@
                   <div class="flex-1">
                     <div class="flex items-center gap-2 flex-wrap">
                       <span class="mono text-sm font-semibold text-primary" x-text="toHHMM(franja.start)+' - '+toHHMM(franja.end)"></span>
-                      <span class="pill-red text-xs" x-text="franja.rol"></span>
-                      <span class="extras-badge" x-text="'faltan '+franja.faltantes"></span>
-                      <span class="text-xs font-semibold" :style="(franja.assignedEmps&&franja.assignedEmps.length>=franja.faltantes)?'color:#3DBF82':'color:#92400E'" x-text="'asignados '+(franja.assignedEmps?franja.assignedEmps.length:0)+'/'+franja.faltantes"></span>
+                      <span class="pill-red text-xs" x-text="roleLabel(franja.rol)"></span>
+                      <span class="extras-badge" x-text="'≈'+(Math.round((franja.deficitMin||0)/60*10)/10)+' h extras'"></span>
+                      <span class="text-xs text-secondary" x-text="'necesitás ~'+(franja.personasReales||franja.faltantes)+' pers. (pico '+franja.faltantes+')'"></span>
+                      <span class="text-xs font-semibold" :style="(franja.assignedEmps&&franja.assignedEmps.length>=(franja.personasReales||franja.faltantes))?'color:#3DBF82':'color:#92400E'" x-text="'asignados '+(franja.assignedEmps?franja.assignedEmps.length:0)+'/'+(franja.personasReales||franja.faltantes)"></span>
                     </div>
                     <template x-if="franja.assignedEmps && franja.assignedEmps.length>0">
                       <div class="mt-1 text-xs text-secondary" x-text="franja.assignedEmps.join(', ')"></div>
@@ -1405,33 +2146,6 @@
         </template>
       </div>
  
-      <!-- Resumen mensual horas extras -->
-      <div x-show="scheduleGenerated && overtimeSummary.length>0" class="card overflow-hidden">
-        <div class="p-4" style="border-bottom:1px solid var(--border)">
-          <h3 class="font-bold text-primary">Resumen mensual de horas extras</h3>
-          <p class="text-xs text-secondary mt-0.5">Total acumulado por empleado en <span x-text="monthName"></span></p>
-        </div>
-        <div class="overflow-x-auto">
-          <table class="w-full text-sm">
-            <thead><tr style="border-bottom:1px solid var(--border)">
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase">Empleado</th>
-              <th class="text-left p-3 text-xs font-600 text-secondary uppercase mobile-hide">Vuelos cubiertos</th>
-              <th class="text-right p-3 text-xs font-600 text-secondary uppercase">Total horas extras</th>
-            </tr></thead>
-            <tbody>
-              <template x-for="row in overtimeSummary" :key="row.name">
-                <tr class="flight-row">
-                  <td class="p-3 font-semibold text-primary text-sm" x-text="row.name"></td>
-                  <td class="p-3 text-xs text-secondary mobile-hide" x-text="row.slots.map(s=>'Día '+s.day+' '+s.label).join(', ')"></td>
-                  <td class="p-3 text-right">
-                    <span class="extras-badge" x-text="Math.floor(row.totalMins/60)+'h '+( row.totalMins%60)+'min'"></span>
-                  </td>
-                </tr>
-              </template>
-            </tbody>
-          </table>
-        </div>
-      </div>
     </div>
  
   </main>
@@ -1510,28 +2224,31 @@
     <template x-if="selectedExtraSlot">
       <div class="mb-4 p-3 rounded-xl" style="background:var(--surface2)">
         <div class="font-bold text-primary" x-text="'Día '+selectedExtraSlot.day+' · '+selectedExtraSlot.label"></div>
-        <div class="text-sm text-secondary" x-text="selectedExtraSlot.rol"></div>
+        <div class="text-sm text-secondary" x-text="roleLabel(selectedExtraSlot.rol)"></div>
         <div class="text-xs mono text-secondary" x-text="toHHMM(selectedExtraSlot.start)+' - '+toHHMM(selectedExtraSlot.end)+' ('+Math.floor((selectedExtraSlot.end-selectedExtraSlot.start)/60)+'h '+((selectedExtraSlot.end-selectedExtraSlot.start)%60)+'min)'"></div>
         <div class="mt-2">
-          <span class="extras-badge" x-text="'Faltan '+selectedExtraSlot.faltantes+' personas'"></span>
-          <span class="text-xs text-secondary ml-2" x-text="'Seleccionados: '+extrasAssignEmps.length+'/'+selectedExtraSlot.faltantes"></span>
+          <span class="extras-badge" x-text="'Necesitás ~'+(selectedExtraSlot.personasReales||selectedExtraSlot.faltantes)+' personas'"></span>
+          <span class="text-xs text-secondary ml-2" x-text="'Seleccionados: '+extrasAssignEmps.length+'/'+(selectedExtraSlot.personasReales||selectedExtraSlot.faltantes)"></span>
         </div>
       </div>
     </template>
     <div>
-      <label class="text-xs font-600 text-secondary block mb-2">Selecciona empleado(s) para cubrir — filtra por rol recomendado</label>
+      <label class="text-xs font-600 text-secondary block mb-2">Selecciona empleado(s) — ⭐ pegado al hueco · 🛌 de descanso ese día (preguntarle)</label>
       <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
-        <template x-for="emp in staff.filter(s=>s.active&&s.role!=='Supervisor').sort((a,b)=>{const r=(e)=>{const st=getRosterStatus(e.id,selectedExtraSlot?.day);return st.isDescanso?(st.blocks==='Descanso semanal'?1:2):0;};return r(a)-r(b);})" :key="emp.id">
-          <div @click="toggleExtraEmp(emp.name)" class="flex items-center gap-3 p-2 rounded-lg cursor-pointer transition"
-            :class="extrasAssignEmps.includes(emp.name)?'':'hover:bg-[var(--surface2)]'"
+        <template x-for="emp in extrasCandidates" :key="emp.id">
+          <div @click="toggleExtraEmp(emp.name)" class="flex items-center gap-3 p-2 rounded-lg transition"
+            :class="extraConflicts[emp.id]?'opacity-50 cursor-not-allowed':('cursor-pointer '+(extrasAssignEmps.includes(emp.name)?'':'hover:bg-[var(--surface2)]'))"
             :style="extrasAssignEmps.includes(emp.name)?'background:var(--green-light);border:1.5px solid #A7F3D0':'border:1.5px solid transparent'">
             <div class="w-5 h-5 rounded flex items-center justify-center shrink-0" :style="extrasAssignEmps.includes(emp.name)?'background:#3DBF82':'border:2px solid var(--border)'">
               <span x-show="extrasAssignEmps.includes(emp.name)" class="text-white text-xs font-bold">✓</span>
             </div>
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium text-primary truncate" x-text="emp.name"></div>
+              <div x-show="extraSugg[emp.name]" class="text-[10px] mt-0.5" style="color:#16A34A" x-text="extraSugg[emp.name]?('⭐ '+extraSugg[emp.name].note):''"></div>
+              <div x-show="selectedExtraSlot && getRosterStatus(emp.id,selectedExtraSlot.day).isDescanso" class="text-[10px] mt-0.5" style="color:#6B7280">🛌 de descanso — preguntarle si quiere la extra</div>
+              <div x-show="extraConflicts[emp.id]" class="text-[10px] mt-0.5 font-semibold" style="color:#DC2626" x-text="'✗ '+extraConflicts[emp.id]+' (no se puede)'"></div>
             </div>
-            <span :class="getRoleColor(emp.role)" x-text="emp.role"></span>
+            <span :class="getRoleColor(emp.role)" x-text="roleLabel(emp.role)"></span>
           </div>
         </template>
       </div>

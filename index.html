@@ -2321,6 +2321,56 @@
   </div>
 </div>
  
+<!-- Modal: Confirmar importación de personal -->
+<div x-show="staffImportModalOpen" class="modal-overlay" style="display:none">
+  <div class="modal-box" @click.away="staffImportModalOpen=false;staffImport=null">
+    <h3 class="font-bold text-primary text-lg mb-1">Confirmar cambio de personal</h3>
+    <p class="text-xs text-secondary mb-4">La lista quedará exactamente como el Excel. Revisá antes de aplicar.</p>
+    <template x-if="staffImport">
+      <div class="space-y-3">
+        <div class="grid grid-cols-3 gap-2 text-center">
+          <div class="rounded-xl p-3" style="background:var(--surface2)">
+            <div class="text-2xl font-bold text-primary" x-text="staffImport.parsed.length"></div>
+            <div class="text-[10px] text-secondary uppercase">Quedan en total</div>
+          </div>
+          <div class="rounded-xl p-3" style="background:var(--surface2)">
+            <div class="text-2xl font-bold" style="color:#3DBF82" x-text="'+'+staffImport.nuevos.length"></div>
+            <div class="text-[10px] text-secondary uppercase">Nuevos</div>
+          </div>
+          <div class="rounded-xl p-3" style="background:var(--surface2)">
+            <div class="text-2xl font-bold" :style="staffImport.eliminados.length?'color:#EF4444':'color:var(--text-secondary)'" x-text="'−'+staffImport.eliminados.length"></div>
+            <div class="text-[10px] text-secondary uppercase">Se eliminan</div>
+          </div>
+        </div>
+        <template x-if="staffImport.nuevos.length">
+          <div class="text-xs">
+            <div class="font-semibold text-secondary mb-1">Se agregan:</div>
+            <div class="text-secondary max-h-24 overflow-y-auto" x-text="staffImport.nuevos.map(s=>s.name).join(' · ')"></div>
+          </div>
+        </template>
+        <template x-if="staffImport.eliminados.length">
+          <div class="text-xs">
+            <div class="font-semibold mb-1" style="color:#EF4444">Se eliminan:</div>
+            <div class="text-secondary max-h-24 overflow-y-auto" x-text="staffImport.eliminados.map(s=>s.name).join(' · ')"></div>
+          </div>
+        </template>
+        <template x-if="staffImport.eliminadosConExtras.length">
+          <div class="alert-warning text-xs">
+            ⚠️ <b x-text="staffImport.eliminadosConExtras.length"></b> de los que se eliminan tienen <b>horas extras registradas este mes</b>: <span x-text="staffImport.eliminadosConExtras.map(s=>s.name).join(', ')"></span>. Si continuás, esas horas se borran del acumulado. Anotá el dato antes si lo necesitás para el pago.
+          </div>
+        </template>
+        <template x-if="!staffImport.eliminados.length && !staffImport.nuevos.length">
+          <div class="text-xs text-secondary">Sin altas ni bajas: solo se actualizan datos (rol, estado u observación) del personal existente.</div>
+        </template>
+      </div>
+    </template>
+    <div class="flex justify-end gap-2 mt-6">
+      <button @click="staffImportModalOpen=false;staffImport=null" class="btn-outline">Cancelar</button>
+      <button @click="applyStaffImport()" class="btn-primary">Aplicar cambios</button>
+    </div>
+  </div>
+</div>
+
 <!-- Modal: Inhabilitar -->
 <div x-show="disableModalOpen" class="modal-overlay" style="display:none">
   <div class="modal-box" style="border:2px solid #FCA5A5" @click.away="disableModalOpen=false">

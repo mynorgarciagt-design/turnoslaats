@@ -250,6 +250,7 @@
       disableReason:'', selectedStaffToDisable:null,
       extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmps:[], overtimeSummary:[], extraSugg:{}, extraConflicts:{}, extrasCandidates:[],
       expandedSummary:null, liveStaffOpen:false, compSalary:4000, compOT:30, compCap:40,
+      staffImport:null, staffImportModalOpen:false, staffImportStatus:'',
       hiringCurve:[{extra:0,def:794,cob:95.3},{extra:5,def:536,cob:96.8},{extra:10,def:344,cob:98},{extra:15,def:205,cob:98.8},{extra:20,def:112,cob:99.3},{extra:25,def:45,cob:99.7},{extra:30,def:14,cob:99.9},{extra:35,def:6,cob:99.9},{extra:40,def:2,cob:99.9}],
       airlineAdvOpen:{},
       generationProgress:null, calculando:false, calcDia:0, calcTotal:0, scheduleGenerated:false, shiftMode:'fixed10',
@@ -438,6 +439,102 @@
           id:`EMP-${String(i+1).padStart(3,'0')}`,
           name:s.name, role:s.role, active:true, disableReason:''
         }));
+      },
+
+      // ── PERSONAL: EXPORTAR / IMPORTAR EXCEL ──
+      // Descarga la lista actual con el MISMO formato que espera la importación
+      // (descargar → editar en Excel → volver a subir).
+      exportStaff(){
+        const data=this.staff.map(s=>({
+          'ID':s.id, 'Nombre':s.name, 'Rol':this.roleLabel(s.role),
+          'Estado':s.active?'Activo':'Inactivo',
+          'Observación':s.disableReason||''
+        }));
+        const ws=XLSX.utils.json_to_sheet(data);
+        const wb=XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb,ws,'Personal');
+        XLSX.writeFile(wb,`LAATS_Personal.xlsx`);
+      },
+      importStaffFile(event){
+        const file=event.target.files[0];if(!file)return;
+        this.staffImportStatus='Procesando...';
+        const reader=new FileReader();
+        reader.onload=(e)=>{
+          try{
+            const wb=XLSX.read(new Uint8Array(e.target.result),{type:'array'});
+            const rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{defval:''});
+            this.prepareStaffImport(rows);
+          }catch(err){ this.staffImportStatus='❌ Error leyendo el archivo: '+err.message; }
+        };
+        reader.readAsArrayBuffer(file);
+        event.target.value=null;
+      },
+      // Lee las filas del Excel y arma el RESUMEN del cambio (no aplica nada todavía).
+      prepareStaffImport(rows){
+        // Roles internos: Operativo · Encargado · Operador · Supervisor.
+        // Se aceptan también los nombres "bonitos" que muestra la app / el Excel descargado.
+        const normRole=(v)=>{
+          const r=String(v==null?'':v).trim().toLowerCase();
+          if(!r)return null;
+          if(r==='operativo'||r.startsWith('agente'))return 'Operativo';
+          if(r.startsWith('encargado'))return 'Encargado';
+          if(r.startsWith('operador'))return 'Operador';
+          if(r.startsWith('supervisor'))return 'Supervisor';
+          return null;
+        };
+        const norm=(v)=>String(v==null?'':v).trim();
+        const parsed=[]; const errores=[];
+        rows.forEach((r,i)=>{
+          // Acepta encabezados con o sin tilde/mayúsculas
+          const get=(...keys)=>{ for(const k of keys){ for(const rk in r){ if(rk.toLowerCase().trim()===k) return r[rk]; } } return ''; };
+          const name=norm(get('nombre','name'));
+          if(!name)return; // fila vacía: se ignora
+          const role=norm(get('rol','role'));
+          const roleMatch=normRole(role);
+          if(!roleMatch){ errores.push(`Fila ${i+2}: rol "${role}" no válido (${name})`); return; }
+          const estado=norm(get('estado','status')).toLowerCase();
+          parsed.push({
+            id: norm(get('id')) || `EMP-IMP-${Date.now()}-${i}`,
+            name, role:roleMatch,
+            active: estado!=='inactivo',
+            disableReason: norm(get('observación','observacion','motivo'))
+          });
+        });
+        if(errores.length){ this.staffImportStatus='❌ '+errores.slice(0,3).join(' · ')+(errores.length>3?` (+${errores.length-3} más)`:''); return; }
+        if(!parsed.length){ this.staffImportStatus='❌ No se encontró ninguna fila con "Nombre". Revisá el formato.'; return; }
+        // Comparar contra lo actual (por ID; si el ID no coincide, por nombre)
+        const curById={},curByName={};
+        this.staff.forEach(s=>{curById[s.id]=s;curByName[s.name.toLowerCase()]=s;});
+        const nuevos=[],quedan=[];
+        parsed.forEach(p=>{ (curById[p.id]||curByName[p.name.toLowerCase()]) ? quedan.push(p) : nuevos.push(p); });
+        const idsImport=new Set(parsed.map(p=>p.id));
+        const namesImport=new Set(parsed.map(p=>p.name.toLowerCase()));
+        const eliminados=this.staff.filter(s=>!idsImport.has(s.id)&&!namesImport.has(s.name.toLowerCase()));
+        // ¿Alguno de los eliminados tiene horas extras asignadas este mes?
+        const conExtras=new Set();
+        (this.overtimeAlerts||[]).forEach(a=>(a.assignedEmps||[]).forEach(n=>conExtras.add(n)));
+        (this.overtimeSummary||[]).forEach(r=>{ if(r.totalMins>0)conExtras.add(r.name); });
+        this.staffImport={ parsed, nuevos, quedan, eliminados,
+          eliminadosConExtras: eliminados.filter(s=>conExtras.has(s.name)) };
+        this.staffImportStatus='';
+        this.staffImportModalOpen=true;
+      },
+      // Aplica el reemplazo YA confirmado por el usuario.
+      applyStaffImport(){
+        const imp=this.staffImport; if(!imp)return;
+        const eliminadosNames=new Set(imp.eliminados.map(s=>s.name));
+        this.staff=imp.parsed;
+        // Limpiar el rastro de horas extra de los eliminados (mismo criterio que deleteStaff)
+        if(eliminadosNames.size){
+          (this.overtimeAlerts||[]).forEach(a=>{ if(a.assignedEmps)a.assignedEmps=a.assignedEmps.filter(n=>!eliminadosNames.has(n)); });
+          Object.keys(this.extraShifts||{}).forEach(k=>{ this.extraShifts[k]=(this.extraShifts[k]||[]).filter(n=>!eliminadosNames.has(n)); });
+          this.buildOvertimeSummary();
+        }
+        this.persistStaff();
+        this.staffImportModalOpen=false;
+        this.staffImportStatus=`✅ Personal actualizado: ${imp.parsed.length} en total (${imp.nuevos.length} nuevos, ${imp.eliminados.length} eliminados). Regenerá los turnos.`;
+        this.staffImport=null;
+        setTimeout(()=>this.staffImportStatus='',8000);
       },
 
       // Toda aerolínea presente en los vuelos debe tener su regla editable en el panel.
@@ -1750,8 +1847,13 @@
     <div x-show="currentTab==='personal'" class="space-y-5">
       <div class="card p-4 flex flex-wrap gap-3 items-center justify-between">
         <input type="text" x-model="staffFilter" placeholder="Buscar por nombre, ID o rol..." class="input-field max-w-xs">
-        <button @click="addNewStaff()" class="btn-primary">+ Registrar empleado</button>
+        <div class="flex gap-2 flex-wrap">
+          <button @click="exportStaff()" class="btn-outline text-sm">📥 Descargar lista</button>
+          <label class="btn-outline cursor-pointer text-sm">📂 Subir lista<input type="file" accept=".xlsx,.xls,.csv" class="hidden" @change="importStaffFile($event)"></label>
+          <button @click="addNewStaff()" class="btn-primary">+ Registrar empleado</button>
+        </div>
       </div>
+      <div x-show="staffImportStatus" class="alert-success text-sm" x-text="staffImportStatus"></div>
       <div class="card overflow-hidden">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">

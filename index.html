@@ -664,7 +664,11 @@
         //   reacomodar descansos. Se deja 'demanda' por si cambia el patrón de vuelos, pero NO
         //   se recomienda (además tiene sesgo en semanas parciales). Mantener 'fijo'. ▼
         const DESCANSO_MODO='fijo';
- 
+        // ▼ Descanso MÍNIMO entre el turno de anoche y el de hoy (minutos). Evita que alguien que
+        //   salió de madrugada entre de nuevo esa misma mañana (jornadas de 16-18h seguidas, y hasta
+        //   turnos que se pisaban entre sí). 0 = solo impedir que se solapen; 480 = 8h de descanso.
+        const DESCANSO_ENTRE_TURNOS=480;
+
         const toM=(t)=>{if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
         const toHHMM=(m)=>{const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;};
         const wd=(d)=>((new Date(this.selectedYear,this.selectedMonth-1,d).getDay())+6)%7; // 0=Lunes ... 6=Domingo
@@ -687,8 +691,8 @@
               const nE=numOr(ar.receptores, f.airline==='AA'?4:2);                                  // receptores por aerolínea
               const nB=numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type], {DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7)); // base: override por aerolínea → global → default
               const oR=numOr(AR.minAntesReceptores,120), oB=numOr(AR.minAntesBase,15);
-              // La anticipación no puede cruzar hacia el día ANTERIOR (vuelo de la 01:28 con 120min
-              // pediría gente a las 23:28 de la víspera → caía en el día equivocado). Se recorta a 00:00.
+              // Desde las 00:00 de SU día. El tramo anterior a medianoche (vuelo de madrugada) lo
+              // pide el día previo — ver "vuelos de MAÑANA" abajo.
               for(let t=Math.max(0,eta-oR);t<etd;t+=STEP)d[t]=(d[t]||0)+nE;
               for(let t=Math.max(0,eta-oB);t<etd;t+=STEP)d[t]=(d[t]||0)+nB;
             }else{
@@ -697,6 +701,29 @@
               for(let t=Math.max(0,eta-oE);t<etd;t+=STEP)d[t]=(d[t]||0)+cnt;
             }
           });
+          // ── Vuelos de MAÑANA que necesitan gente ANTES de medianoche ──
+          // Un vuelo de madrugada (ej. 01:28) con 120 min de anticipo pide receptores a las 23:28
+          // de HOY: ese tramo pertenece a la operación de ESTA noche, no a la del día del vuelo.
+          // Solo se agrega el pedazo previo a medianoche; de 00:00 en adelante lo cubre su propio día.
+          // (El día 1 del mes no tiene "día anterior" dentro del horario → ese vuelo arranca 00:00.)
+          if(day<DIAS){
+            this.flights.filter(f=>f.active&&f.days.includes(day+1)).forEach(f=>{
+              const eta=norm5(toM(f.eta));
+              const preMedianoche=(lead,n)=>{
+                const ini=eta-lead; if(ini>=0)return;              // no cruza medianoche: nada que hacer
+                for(let t=1440+ini;t<1440;t+=STEP)d[t]=(d[t]||0)+n;
+              };
+              if(pool==='operativo'){
+                const ar=RULES[f.airline]||{};
+                const nE=numOr(ar.receptores, f.airline==='AA'?4:2);
+                const nB=numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type], {DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7));
+                preMedianoche(numOr(AR.minAntesReceptores,120), nE);
+                preMedianoche(numOr(AR.minAntesBase,15), nB);
+              }else{
+                preMedianoche(numOr(AR.minAntesEncOp,30), numOr(pool==='encargado'?AR.encargadosPorVuelo:AR.operadoresPorVuelo,1));
+              }
+            });
+          }
           return d;
         };
 
@@ -967,11 +994,61 @@
             const {workers,coverage}=assignMixed(demand,availableAll.length,poolSeed);
 
             const sorted=[...availableAll].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
+
+            // ── Descanso entre el turno de ANOCHE y el de HOY ──
+            // Dos límites por persona:
+            //  · ocupadoHasta = si anoche terminó pasada la medianoche, sigue trabajando esa
+            //    madrugada. Es FÍSICO: jamás se puede violar (estaría en dos lugares a la vez).
+            //  · libreDesde   = ocupadoHasta + DESCANSO_ENTRE_TURNOS. Es la META de descanso;
+            //    si la operación no da para respetarla, se cede — pero nunca el límite físico.
+            const ocupadoHasta={}, libreDesde={};
+            sorted.forEach(emp=>{
+              const prev=day>1?(this.currentRoster[emp.id]||{})[day-1]:null;
+              let fin=0; // fin del turno de anoche, en el eje de AYER (>1440 = cruzó medianoche)
+              if(prev&&!prev.isDescanso&&prev.blocks){
+                const fines=[...String(prev.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)]
+                  .map(m=>{let s=(+m[1])*60+(+m[2]),e=(+m[3])*60+(+m[4]);if(e<=s)e+=1440;return e;});
+                if(fines.length)fin=Math.max(...fines);
+              }
+              ocupadoHasta[emp.id]=fin>1440?fin-1440:0;
+              libreDesde[emp.id]=fin?Math.max(0,fin-1440+DESCANSO_ENTRE_TURNOS):0;
+            });
+            const inicioDe=(blks)=>Math.min(...blks.map(b=>b[0]));
+            // Asignación base (la de siempre: turno i → persona i por menos días trabajados)
+            const turnoDe={};
+            sorted.forEach((emp,i)=>{ if(i<workers.length)turnoDe[emp.id]=i; });
+            // Corregir choques. Se intenta primero con el descanso completo; si no hay con quién,
+            // se repite exigiendo solo el límite físico. Si ni así, la persona NO trabaja ese turno
+            // (jamás se deja un turno imposible).
+            const reacomodar=(tope)=>{
+              sorted.forEach(emp=>{
+                const wi=turnoDe[emp.id];
+                if(wi===undefined||tope[emp.id]<=inicioDe(workers[wi]))return;
+                for(const otro of sorted){                       // 1) intercambiar con un compañero
+                  const wj=turnoDe[otro.id];
+                  if(wj===undefined||otro.id===emp.id)continue;
+                  if(tope[emp.id]<=inicioDe(workers[wj])&&tope[otro.id]<=inicioDe(workers[wi])){
+                    turnoDe[emp.id]=wj; turnoDe[otro.id]=wi; return;
+                  }
+                }
+                for(const libre of sorted){                      // 2) cedérselo a quien hoy descansaba
+                  if(turnoDe[libre.id]!==undefined)continue;
+                  if(tope[libre.id]<=inicioDe(workers[wi])){
+                    turnoDe[libre.id]=wi; delete turnoDe[emp.id]; return;
+                  }
+                }
+                if(tope===ocupadoHasta)delete turnoDe[emp.id];   // 3) imposible: nadie cubre ese turno
+              });
+            };
+            reacomodar(libreDesde);
+            reacomodar(ocupadoHasta);
+
             const sobrantes=[];
-            sorted.forEach((emp,i)=>{
+            sorted.forEach((emp)=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
-              if(i<workers.length){
-                const blks=workers[i];
+              const wi=turnoDe[emp.id];
+              if(wi!==undefined){
+                const blks=workers[wi];
                 const isSplit=blks.length>1;
                 const totalMin=blks.reduce((a,seg)=>a+(seg[1]-seg[0]),0);
                 const blockStr=blks.map(seg=>`${toHHMM(seg[0])} - ${toHHMM(seg[1])}`).join(' / ');
@@ -1025,7 +1102,10 @@
             });
             const cmin={},cwins={};
             wins.forEach(win=>{
-              const present=onDuty.filter(o=>o.segs.some(([s,e])=>this._ovlExtra(win.start,win.end,s,e)));
+              // Comparación LINEAL en el eje del día (los tramos que cruzan medianoche ya vienen
+              // con fin >1440). NO usar _ovlExtra acá: ese "da la vuelta al reloj" y hacía que una
+              // ventana de 23:30-00:05 (noche) le cayera a quien trabajó 00:00-06:00 (madrugada).
+              const present=onDuty.filter(o=>o.segs.some(([s,e])=>win.start<e&&s<win.end));
               present.sort((a,b)=>(cmin[a.emp.id]||0)-(cmin[b.emp.id]||0)); // el que menos limpió, primero
               present.slice(0,EQUIPO_LIMPIEZA).forEach(o=>{cmin[o.emp.id]=(cmin[o.emp.id]||0)+(win.end-win.start);(cwins[o.emp.id]=cwins[o.emp.id]||[]).push(win);});
             });
@@ -1259,7 +1339,10 @@
         const st=this.getRosterStatus(emp.id,slot.day);
         if(st.isDescanso)return null; // descansa ese día: no hay turno que choque
         const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(m=>{let s=(+m[1])*60+(+m[2]),e=(+m[3])*60+(+m[4]);if(e<=s)e+=1440;return[s,e];});
-        for(const[s,e]of segs){if(this._ovlExtra(slot.start,slot.end,s,e))return 'ya trabaja a esa hora';}
+        // Comparación LINEAL: franja y turno están en el mismo eje del día (los que cruzan
+        // medianoche vienen con fin >1440). Con _ovlExtra (que da la vuelta al reloj) una franja
+        // nocturna 23:30-00:35 bloqueaba por error a quien trabaja 00:00-06:00 de la MADRUGADA.
+        for(const[s,e]of segs){if(slot.start<e&&s<slot.end)return 'ya trabaja a esa hora';}
         return null;
       },
       toggleExtraEmp(empName){

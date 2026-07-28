@@ -1164,6 +1164,35 @@
         }else{
           this.smartAlerts=[{type:'success',message:`Cobertura completa (100%) para todo ${this.monthName}.`}];
         }
+        // ── Aviso del DÍA 1: vuelos de madrugada que necesitan gente la noche ANTERIOR ──
+        // Esa noche pertenece al mes pasado y el motor no puede escribir en otro horario,
+        // así que se avisa para asignarlo a mano en las Horas Extras de ese mes.
+        {
+          const AR=this.algorithmRules||{}, RULES=this.airlineRules||{};
+          const numOr=(v,def)=>(typeof v==='number'&&!isNaN(v))?v:def;
+          const previos={}; // "HH:MM|rol" -> cantidad
+          this.flights.filter(f=>f.active&&f.days.includes(1)).forEach(f=>{
+            const eta=norm5(toM(f.eta)), ar=RULES[f.airline]||{};
+            const anota=(lead,n,rol)=>{ const ini=eta-lead; if(ini>=0||!(n>0))return;
+              const k=toHHMM(1440+ini)+'|'+rol; previos[k]=(previos[k]||0)+n; };
+            anota(numOr(AR.minAntesReceptores,120), numOr(ar.receptores,f.airline==='AA'?4:2), 'rampa');
+            anota(numOr(AR.minAntesBase,15), numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type],{DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7)), 'rampa');
+            anota(numOr(AR.minAntesEncOp,30), numOr(AR.encargadosPorVuelo,1), 'encargado');
+            anota(numOr(AR.minAntesEncOp,30), numOr(AR.operadoresPorVuelo,1), 'operador');
+          });
+          const claves=Object.keys(previos);
+          if(claves.length){
+            const MES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+            const mp=this.selectedMonth===1?12:this.selectedMonth-1;
+            const ap=this.selectedMonth===1?this.selectedYear-1:this.selectedYear;
+            const dp=new Date(ap,mp,0).getDate();
+            const nombre=(rol,n)=>rol==='rampa'?(n===1?'1 agente de rampa':n+' agentes de rampa')
+                                 :rol==='encargado'?(n===1?'1 encargado':n+' encargados')
+                                 :(n===1?'1 operador':n+' operadores');
+            const detalle=claves.sort().map(k=>{const p=k.split('|');return `${nombre(p[1],previos[k])} desde las ${p[0]}`;}).join(' · ');
+            this.smartAlerts.push({type:'warning',message:`⚠️ El día 1 tiene vuelo de madrugada: necesitás ${detalle} del ${dp} de ${MES[mp-1]}. Esa noche pertenece al horario de ${MES[mp-1]} — asignala a mano en sus Horas Extras (el motor no puede escribir en otro mes).`});
+          }
+        }
       },
  
       buildOvertimeSummary(){

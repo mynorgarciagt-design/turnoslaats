@@ -251,6 +251,8 @@
       extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmps:[], overtimeSummary:[], extraSugg:{}, extraConflicts:{}, extrasCandidates:[],
       expandedSummary:null, liveStaffOpen:false, compSalary:4000, compOT:30, compCap:40,
       staffImport:null, staffImportModalOpen:false, staffImportStatus:'',
+      prevSummary:[], prevMesLabel:'', prevCargando:false, prevCargado:false,
+      otSearch:'', otSort:'mes', otExpand:null,
       hiringCurve:[{extra:0,def:794,cob:95.3},{extra:5,def:536,cob:96.8},{extra:10,def:344,cob:98},{extra:15,def:205,cob:98.8},{extra:20,def:112,cob:99.3},{extra:25,def:45,cob:99.7},{extra:30,def:14,cob:99.9},{extra:35,def:6,cob:99.9},{extra:40,def:2,cob:99.9}],
       airlineAdvOpen:{},
       generationProgress:null, calculando:false, calcDia:0, calcTotal:0, scheduleGenerated:false, shiftMode:'fixed10',
@@ -1195,15 +1197,84 @@
         }
       },
  
-      buildOvertimeSummary(){
+      buildOvertimeSummary(){ this.overtimeSummary=this.computeOvertimeSummary(); },
+
+      // ── PESTAÑA "HORAS EXTRAS": horas por persona, este mes vs el anterior ──
+      // Trae de la nube el mes anterior y le aplica el MISMO cálculo (no se guarda el resumen:
+      // se reconstruye del roster + extras asignadas de ese mes).
+      async loadPrevMonthOvertime(){
+        if(this.prevCargando)return;
+        this.prevCargando=true;
+        const mp=this.selectedMonth===1?12:this.selectedMonth-1;
+        const ap=this.selectedMonth===1?this.selectedYear-1:this.selectedYear;
+        const MES=['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
+        this.prevMesLabel=MES[mp-1]+' '+ap;
+        try{
+          const doc=await db.collection('laats_turnos').doc(`laats_${ap}_${mp}`).get();
+          this.prevSummary=doc.exists?this.computeOvertimeSummary(doc.data().currentRoster||{},doc.data().overtimeAlerts||[]):[];
+        }catch(e){ console.error('Error cargando mes anterior',e); this.prevSummary=[]; }
+        this.prevCargando=false; this.prevCargado=true;
+      },
+      // Tabla combinada: cada persona con sus horas de este mes y del anterior.
+      get otRows(){
+        const min=(m)=>Math.round((m||0)/6)/10; // minutos → horas con 1 decimal
+        const act={},prev={};
+        (this.overtimeSummary||[]).forEach(r=>act[r.name]=r);
+        (this.prevSummary||[]).forEach(r=>prev[r.name]=r);
+        const roleOf={}; this.staff.forEach(s=>roleOf[s.name]=s.role);
+        let rows=[...new Set([...Object.keys(act),...Object.keys(prev)])].map(name=>{
+          const a=act[name],p=prev[name];
+          return {name, rol:this.roleLabel(roleOf[name]||'—'),
+            mesMin:a?a.totalMins:0, prevMin:p?p.totalMins:0,
+            mes:min(a&&a.totalMins), prev:min(p&&p.totalMins),
+            slots:a?a.slots:[], extension:min(a&&a.extensionMins)};
+        });
+        const q=(this.otSearch||'').toLowerCase().trim();
+        if(q)rows=rows.filter(r=>r.name.toLowerCase().includes(q)||r.rol.toLowerCase().includes(q));
+        const s=this.otSort;
+        rows.sort(s==='nombre'?(a,b)=>a.name.localeCompare(b.name)
+                 :s==='menos'?(a,b)=>a.mesMin-b.mesMin
+                 :s==='anterior'?(a,b)=>b.prevMin-a.prevMin
+                 :(a,b)=>b.mesMin-a.mesMin);
+        return rows;
+      },
+      // Promedio de horas del mes (entre quienes tienen horas) — base del semáforo de equidad.
+      get otPromedio(){
+        const v=(this.overtimeSummary||[]).map(r=>r.totalMins).filter(m=>m>0);
+        return v.length?Math.round(v.reduce((a,b)=>a+b,0)/v.length):0;
+      },
+      // Semáforo: 'alto' = 25% o más por encima del promedio · 'bajo' = 25% o más por debajo.
+      otNivel(mins){
+        const p=this.otPromedio; if(!p||!mins)return '';
+        if(mins>=p*1.25)return 'alto';
+        if(mins<=p*0.75)return 'bajo';
+        return '';
+      },
+      exportOvertime(){
+        const data=this.otRows.map(r=>({
+          'Nombre':r.name,'Rol':r.rol,
+          [`Horas extra ${this.monthName}`]:r.mes,
+          [`Horas extra ${this.prevMesLabel||'mes anterior'}`]:r.prev,
+          'Sobre el tope':(this.compCap>0&&r.mes>this.compCap)?'SÍ':''
+        }));
+        const ws=XLSX.utils.json_to_sheet(data.length?data:[{'Nombre':'—'}]);
+        const wb=XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb,ws,'Horas extras');
+        XLSX.writeFile(wb,`LAATS_HorasExtras_${this.monthName}_${this.selectedYear}.xlsx`);
+      },
+      // Mismo cálculo, pero reusable con los datos de OTRO mes (para la pestaña de Horas Extras,
+      // que compara contra el mes anterior). Sin argumentos = mes actual, igual que siempre.
+      computeOvertimeSummary(rosterArg,alertsArg){
+        const roster=rosterArg||this.currentRoster;
+        const alerts=alertsArg||this.overtimeAlerts;
         const summary={};
-        this.overtimeAlerts.forEach(alert=>{
+        alerts.forEach(alert=>{
           const emps=alert.assignedEmps||[];
           if(!emps.length)return;
           const win=alert.end-alert.start;                  // ventana mostrada de la franja
           const real=Math.max(5,(alert.deficitMin||0));     // trabajo real de la franja (min-persona)
           const n=emps.length;
-          const sugg=this.extraSuggestions(alert);           // quiénes tienen turno pegado al hueco
+          const sugg=this.extraSuggestions(alert,roster);    // quiénes tienen turno pegado al hueco
           emps.forEach(empName=>{
             if(!summary[empName])summary[empName]={name:empName,slots:[],totalMins:0};
             const near=sugg[empName];
@@ -1218,7 +1289,7 @@
         // Horas de EXTENSIÓN: lo que cada turno pasa de las 10h se paga como extra y se SUMA
         // a las horas extra asignadas a mano (un solo total por persona para el pago del mes).
         this.staff.forEach(emp=>{
-          const r=this.currentRoster[emp.id]; if(!r)return;
+          const r=roster[emp.id]; if(!r)return;
           for(const day in r){
             const st=r[day]; if(!st||st.isDescanso)continue;
             const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(mm=>{let s=(+mm[1])*60+(+mm[2]),e=(+mm[3])*60+(+mm[4]);if(e<=s)e+=1440;return e-s;});
@@ -1232,7 +1303,7 @@
             }
           }
         });
-        this.overtimeSummary=Object.values(summary).sort((a,b)=>b.totalMins-a.totalMins);
+        return Object.values(summary).sort((a,b)=>b.totalMins-a.totalMins);
       },
       // Avance de cobertura de extras: cuánto del déficit ya está tapado por lo que asignaste.
       // Se mide sobre las MISMAS franjas del panel (Σ deficitMin = el número grande ≈X h) y cuenta
@@ -1280,9 +1351,9 @@
         return rows.reduce((b,r)=>r.total<b.total?r:b,rows[0]);
       },
  
-      getRosterStatus(empId,day){
+      getRosterStatus(empId,day,rosterArg){
         const d=day!==undefined?day:this.selectedDay;
-        const empRoster=this.currentRoster[empId];
+        const empRoster=(rosterArg||this.currentRoster)[empId];
         if(!empRoster)return{isDescanso:true,blocks:'-',meal:'-'};
         return empRoster[d]||{isDescanso:true,blocks:'-',meal:'-'};
       },
@@ -1328,7 +1399,7 @@
       // están en el aeropuerto pegados al hueco — salen justo antes, entran
       // justo después, o el hueco cae en la pausa de su turno partido.
       // Nadie viaja al aeropuerto por una hora suelta.
-      extraSuggestions(slot){
+      extraSuggestions(slot,rosterArg){
         const out={};
         if(!slot)return out;
         const MAXGAP=30; // espera/anticipo máximo considerado "pegado" (30 min)
@@ -1337,7 +1408,7 @@
         const role=roleMap[slot.rol]||slot.rol;
         const sS=((slot.start%1440)+1440)%1440, sE=((slot.end%1440)+1440)%1440;
         this.staff.filter(s=>s.active&&s.role===role).forEach(emp=>{
-          const st=this.getRosterStatus(emp.id,slot.day);
+          const st=this.getRosterStatus(emp.id,slot.day,rosterArg);
           if(st.isDescanso)return;
           const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(m=>{let s=(+m[1])*60+(+m[2]),e=(+m[3])*60+(+m[4]);if(e<=s)e+=1440;return[s,e];});
           if(!segs.length)return;
@@ -1681,8 +1752,8 @@
       <button @click="mobileMenuOpen=false" class="text-secondary text-xl">✕</button>
     </div>
     <nav class="p-4 flex flex-col gap-1">
-      <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Horas Extras'}]">
-        <button @click="currentTab=item.id;mobileMenuOpen=false"
+      <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Asignación de horas'},{id:'resumen_extras',label:'Horas Extras'}]">
+        <button @click="currentTab=item.id;mobileMenuOpen=false;if(item.id==='resumen_extras'&&!prevCargado)loadPrevMonthOvertime()"
           :class="currentTab===item.id?'nav-btn active':'nav-btn'"
           class="text-left w-full relative">
           <span x-text="item.label"></span>
@@ -1715,8 +1786,8 @@
       </div>
  
       <nav class="hidden md:flex items-center gap-1">
-        <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Horas Extras'}]">
-          <button @click="currentTab=item.id" :class="currentTab===item.id?'nav-btn active':'nav-btn'" class="relative">
+        <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Asignación de horas'},{id:'resumen_extras',label:'Horas Extras'}]">
+          <button @click="currentTab=item.id;if(item.id==='resumen_extras'&&!prevCargado)loadPrevMonthOvertime()" :class="currentTab===item.id?'nav-btn active':'nav-btn'" class="relative">
             <span x-text="item.label"></span>
             <template x-if="item.id==='horas_extras' && overtimeAlerts.length>0">
               <span class="absolute -top-1 -right-1 w-4 h-4 rounded-full text-white text-[9px] font-bold flex items-center justify-center" style="background:#EF4444" x-text="overtimeAlerts.length"></span>
@@ -2224,10 +2295,110 @@
       </div>
     </div>
  
-    <!-- ═══════ HORAS EXTRAS ═══════ -->
+    <!-- ═══════ HORAS EXTRAS (resumen por persona) ═══════ -->
+    <div x-show="currentTab==='resumen_extras'" class="space-y-5">
+      <div class="card p-6">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-primary mb-1">Horas Extras por colaborador</h2>
+            <p class="text-sm text-secondary">Cuántas horas extra lleva cada persona este mes, comparado con el mes anterior.</p>
+          </div>
+          <button @click="exportOvertime()" class="btn-outline text-sm shrink-0">📥 Excel</button>
+        </div>
+        <div x-show="!scheduleGenerated" class="alert-warning text-sm mt-4">Generá los turnos del mes para ver las horas extra.</div>
+        <template x-if="scheduleGenerated">
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
+            <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+              <div class="text-2xl font-bold text-primary" x-text="otRows.length"></div>
+              <div class="text-[10px] text-secondary uppercase">Personas con extras</div>
+            </div>
+            <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+              <div class="text-2xl font-bold" style="color:#F59E0B" x-text="Math.round(otRows.reduce((a,r)=>a+r.mesMin,0)/6)/10+' h'"></div>
+              <div class="text-[10px] text-secondary uppercase" x-text="'Total '+monthName"></div>
+            </div>
+            <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+              <div class="text-2xl font-bold text-primary" x-text="Math.round(otPromedio/6)/10+' h'"></div>
+              <div class="text-[10px] text-secondary uppercase">Promedio por persona</div>
+            </div>
+            <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+              <div class="text-2xl font-bold" :style="otRows.filter(r=>compCap>0&&r.mes>compCap).length?'color:#EF4444':'color:#3DBF82'" x-text="otRows.filter(r=>compCap>0&&r.mes>compCap).length"></div>
+              <div class="text-[10px] text-secondary uppercase" x-text="'Pasan el tope ('+compCap+'h)'"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <template x-if="scheduleGenerated">
+        <div class="card overflow-hidden">
+          <div class="p-4 flex flex-col sm:flex-row gap-3 items-start sm:items-center justify-between" style="border-bottom:1px solid var(--border)">
+            <input type="text" x-model="otSearch" placeholder="Buscar por nombre o rol..." class="input-field w-full sm:w-64 text-sm">
+            <div class="flex items-center gap-2">
+              <label class="text-xs text-secondary">Ordenar:</label>
+              <select x-model="otSort" class="input-field text-sm w-44">
+                <option value="mes">Más horas este mes</option>
+                <option value="menos">Menos horas este mes</option>
+                <option value="anterior">Más horas mes anterior</option>
+                <option value="nombre">Nombre A–Z</option>
+              </select>
+            </div>
+          </div>
+          <div x-show="prevCargando" class="p-3 text-xs text-secondary">Cargando mes anterior…</div>
+          <div x-show="prevCargado&&!prevSummary.length" class="p-3 text-xs text-tertiary" x-text="'Sin datos guardados de '+prevMesLabel+'.'"></div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead><tr style="border-bottom:1px solid var(--border)">
+                <th class="text-left p-3 text-xs font-600 text-secondary uppercase">Colaborador</th>
+                <th class="text-left p-3 text-xs font-600 text-secondary uppercase mobile-hide">Rol</th>
+                <th class="text-right p-3 text-xs font-600 text-secondary uppercase" x-text="monthName"></th>
+                <th class="text-right p-3 text-xs font-600 text-secondary uppercase" x-text="prevMesLabel||'Mes anterior'"></th>
+                <th class="text-center p-3 text-xs font-600 text-secondary uppercase">Equidad</th>
+                <th class="text-right p-3 text-xs font-600 text-secondary uppercase"></th>
+              </tr></thead>
+              <tbody>
+                <template x-for="r in otRows" :key="r.name">
+                  <tr class="flight-row" style="border-bottom:1px solid var(--border)">
+                    <td class="p-3">
+                      <div class="font-semibold text-primary text-xs" x-text="r.name"></div>
+                      <div x-show="otExpand===r.name" class="mt-2 space-y-1">
+                        <template x-for="s in r.slots" :key="s.day+'-'+s.label">
+                          <div class="text-[11px] text-secondary" x-text="'Día '+s.day+' · '+s.label+' ('+s.mins+' min)'"></div>
+                        </template>
+                        <div x-show="!r.slots.length" class="text-[11px] text-tertiary">Sin detalle.</div>
+                      </div>
+                    </td>
+                    <td class="p-3 mobile-hide"><span class="text-xs text-secondary" x-text="r.rol"></span></td>
+                    <td class="p-3 text-right">
+                      <span class="font-bold" :style="(compCap>0&&r.mes>compCap)?'color:#EF4444':'color:var(--text-primary)'" x-text="r.mes+' h'"></span>
+                      <span x-show="compCap>0&&r.mes>compCap" class="text-[10px] block" style="color:#EF4444">supera el tope</span>
+                    </td>
+                    <td class="p-3 text-right text-secondary" x-text="r.prev?r.prev+' h':'—'"></td>
+                    <td class="p-3 text-center">
+                      <span x-show="otNivel(r.mesMin)==='alto'" class="pill-red">Alto</span>
+                      <span x-show="otNivel(r.mesMin)==='bajo'" class="pill-green">Bajo</span>
+                      <span x-show="!otNivel(r.mesMin)" class="text-xs text-tertiary">—</span>
+                    </td>
+                    <td class="p-3 text-right">
+                      <button @click="otExpand=(otExpand===r.name?null:r.name)" class="btn-outline text-xs" x-text="otExpand===r.name?'Ocultar':'Detalle'"></button>
+                    </td>
+                  </tr>
+                </template>
+                <template x-if="!otRows.length">
+                  <tr><td colspan="6" class="p-6 text-center text-sm text-secondary">Todavía nadie tiene horas extra este mes.</td></tr>
+                </template>
+              </tbody>
+            </table>
+          </div>
+          <div class="p-3 text-[11px] text-tertiary" style="border-top:1px solid var(--border)">
+            <b>Equidad:</b> "Alto" = 25% o más por encima del promedio · "Bajo" = 25% o menos. Sirve para repartir parejo el mes siguiente.
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ═══════ ASIGNACIÓN DE HORAS ═══════ -->
     <div x-show="currentTab==='horas_extras'" class="space-y-5">
       <div class="card p-6">
-        <h2 class="text-xl font-bold text-primary mb-1">Horas Extras</h2>
+        <h2 class="text-xl font-bold text-primary mb-1">Asignación de horas</h2>
         <p class="text-sm text-secondary">Vuelos con déficit de personal. Asigna manualmente quién cubre cada posición faltante.</p>
         <div x-show="scheduleGenerated" class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
           <div class="rounded-xl p-4" style="background:var(--surface2);border:1px solid var(--border)">

@@ -42,10 +42,12 @@
  
     .pill-green{background:var(--green-light);color:var(--green-dark);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;}
     .pill-blue{background:#E8F0FE;color:#1A56C4;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;}
+    .pill-purple{background:#F3E8FF;color:#6B21A8;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;}
     .pill-amber{background:#FEF3C7;color:#92400E;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;}
     .pill-red{background:#FEE2E2;color:#991B1B;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;}
     .pill-gray{background:var(--surface2);color:var(--text2);border-radius:20px;padding:3px 10px;font-size:11px;font-weight:600;}
     .dark .pill-blue{background:rgba(26,86,196,0.2);color:#93C5FD;}
+    .dark .pill-purple{background:rgba(107,33,168,0.25);color:#D8B4FE;}
     .dark .pill-amber{background:rgba(146,64,14,0.2);color:#FCD34D;}
     .dark .pill-red{background:rgba(153,27,27,0.2);color:#FCA5A5;}
  
@@ -100,6 +102,52 @@
  
     .extras-badge{background:#FEE2E2;color:#991B1B;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:700;}
  
+    /* ── REPORTE: gráfica con enfoque al día ──
+       Al elegir un día, las demás barras se apagan y se achican, la elegida se ensancha
+       y el detalle entra desde la derecha. Todo con transiciones CSS, sin librerías. */
+    .rep-stage{display:flex;align-items:stretch;}
+    .rep-chart{flex:1 1 auto;min-width:0;}
+    .rep-alto{transition:height .5s cubic-bezier(.22,.9,.3,1);}  /* crece al abrir un día */
+    .rep-col{flex:1 1 0;display:flex;flex-direction:column;align-items:center;height:100%;
+      cursor:pointer;min-width:0;
+      transition:flex-grow .55s cubic-bezier(.22,.9,.3,1),opacity .4s ease,filter .4s ease;}
+    .rep-col.dim{opacity:.2;filter:saturate(.35);}
+    .rep-col.dim .rep-val{opacity:0;}          /* al achicarse el número no cabe */
+    .rep-val{height:15px;font-size:10px;font-weight:700;color:#B45309;white-space:nowrap;
+      line-height:1.4;transition:opacity .35s ease,font-size .45s ease;}
+    .rep-col.sel .rep-val{font-size:15px;}
+    .rep-slot{flex:1;width:100%;display:flex;align-items:flex-end;}
+    .rep-bar{width:100%;border-radius:5px 5px 2px 2px;background:#FCD34D;height:0;
+      transition:height .62s cubic-bezier(.16,1,.3,1),background .3s ease,box-shadow .3s ease;}
+    .rep-col:hover .rep-bar{background:#F59E0B;}
+    .rep-col.sel .rep-bar{background:#F59E0B;box-shadow:0 6px 18px -6px rgba(245,158,11,.75);}
+    .rep-ax{flex:1 1 0;text-align:center;font-size:9.5px;color:var(--text-tertiary);
+      min-width:0;overflow:hidden;cursor:pointer;
+      transition:flex-grow .55s cubic-bezier(.22,.9,.3,1),opacity .4s ease,color .3s,font-size .3s;}
+    .rep-ax.dim{opacity:.25;font-size:0;}
+    .rep-ax.sel{color:#B45309;font-weight:800;font-size:12px;}
+    .rep-panel{flex:0 0 0%;overflow:hidden;opacity:0;
+      transition:flex-basis .5s cubic-bezier(.22,.9,.3,1),opacity .34s ease .12s;}
+    .rep-panel.open{flex-basis:46%;opacity:1;}
+    .rep-panel-in{border-left:1px solid var(--border);padding-left:20px;margin-left:20px;}
+    .rep-stag{opacity:0;transform:translateY(9px);
+      transition:opacity .4s ease,transform .4s cubic-bezier(.22,.9,.3,1);}
+    .rep-panel.open .rep-stag{opacity:1;transform:none;}
+    .rep-panel.open .rep-s1{transition-delay:.16s}
+    .rep-panel.open .rep-s2{transition-delay:.22s}
+    .rep-panel.open .rep-s3{transition-delay:.28s}
+    .rep-panel.open .rep-s4{transition-delay:.34s}
+    @media(max-width:900px){
+      .rep-stage{flex-direction:column;}
+      .rep-panel.open{flex-basis:auto;}
+      .rep-alto{height:230px!important;}   /* en celular no crece: ocuparía toda la pantalla */
+      .rep-panel-in{border-left:none;border-top:1px solid var(--border);
+        padding-left:0;margin-left:0;padding-top:16px;margin-top:16px;}
+    }
+    @media(prefers-reduced-motion:reduce){
+      .rep-col,.rep-bar,.rep-ax,.rep-panel,.rep-stag,.rep-val{transition-duration:.01ms!important;}
+    }
+
     @media(max-width:768px){.mobile-hide{display:none!important;}}
     [x-cloak]{display:none!important;}
  
@@ -251,8 +299,11 @@
       extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmps:[], overtimeSummary:[], extraSugg:{}, extraConflicts:{}, extrasCandidates:[],
       expandedSummary:null, liveStaffOpen:false, compSalary:4000, compOT:30, compCap:40,
       staffImport:null, staffImportModalOpen:false, staffImportStatus:'',
+      flightDaysText:'',
       prevSummary:[], prevMesLabel:'', prevCargando:false, prevCargado:false,
       otSearch:'', otSort:'mes', otExpand:null,
+      repDia:null, repEntrada:false, repAnim:{horas:0,trabajaron:0,descansando:0},
+      reglasStatus:'', reglasCargadas:false, _reglasTimer:null,
       hiringCurve:[{extra:0,def:794,cob:95.3},{extra:5,def:536,cob:96.8},{extra:10,def:344,cob:98},{extra:15,def:205,cob:98.8},{extra:20,def:112,cob:99.3},{extra:25,def:45,cob:99.7},{extra:30,def:14,cob:99.9},{extra:35,def:6,cob:99.9},{extra:40,def:2,cob:99.9}],
       airlineAdvOpen:{},
       generationProgress:null, calculando:false, calcDia:0, calcTotal:0, scheduleGenerated:false, shiftMode:'fixed10',
@@ -265,7 +316,7 @@
       algorithmRules:{
         encargadosPorVuelo:1, operadoresPorVuelo:1,
         basePorTipo:{DESPACHO:7,TURN:10,RECEPCION:8},
-        minAntesReceptores:120, minAntesBase:15, minAntesEncOp:30,
+        minAntesReceptores:120, minAntesBase:15, minAntesEncOp:30, minAntesEncargado:30, minAntesOperador:30, ecofoxPorTurno:3,
         minutosAntesVuelo:15, maxHorasDiarias:10,
         minHorasBloque:2, minDescansoPartido:180,
         minutosComida:45, umbralComida:300, umbralAgrupar:180,
@@ -287,7 +338,8 @@
         // Firebase auth listener
         auth.onAuthStateChanged(async u=>{
           this.user=u; this.authReady=true;
-          if(u){ await this.loadStaff(); await this.loadFromFirestore(); }
+          // Las reglas ANTES del mes: son globales y el mes ya no las toca.
+          if(u){ await this.loadStaff(); await this.loadReglas(); await this.loadFromFirestore(); }
         });
       },
  
@@ -364,14 +416,9 @@
           if(doc.exists){
             const d=doc.data();
             if(d.flights) this.flights=d.flights;
-            if(d.airlineRules) this.airlineRules=d.airlineRules;
-            if(d.algorithmRules){ this.algorithmRules=d.algorithmRules;
-              const a=this.algorithmRules;
-              if(!a.basePorTipo)a.basePorTipo={DESPACHO:7,TURN:10,RECEPCION:8};
-              if(a.minAntesReceptores==null)a.minAntesReceptores=120;
-              if(a.minAntesBase==null)a.minAntesBase=15;
-              if(a.minAntesEncOp==null)a.minAntesEncOp=30;
-            }
+            // ⚠️ Las REGLAS ya NO se leen del mes: son globales (doc `_reglas`, ver loadReglas).
+            // Antes se pisaban al cambiar de mes y se perdía lo que estuvieras editando.
+            // Cada mes igual guarda su copia, pero solo como registro de con qué se generó.
             if(d.currentRoster){ this.currentRoster=d.currentRoster; this.scheduleGenerated=true; }
             if(d.extraShifts) this.extraShifts=d.extraShifts;
             if(d.smartAlerts) this.smartAlerts=d.smartAlerts;
@@ -392,7 +439,7 @@
             this.flights=[]; this.currentRoster={}; this.scheduleGenerated=false;
             this.extraShifts={}; this.smartAlerts=[]; this.overtimeAlerts=[]; this.overtimeSummary=[];
             this.coverageMetrics={percent:100,deficientHours:0,hoursIdle:0};
-            this.saveStatus='Este mes no tiene datos guardados. Cargá su Excel.';
+            this.saveStatus='Este mes todavía no tiene nada guardado. Falta cargar el Excel de sus vuelos.';
             setTimeout(()=>this.saveStatus='',4000);
           }
         }catch(e){ console.error('Error cargando Firestore',e); }
@@ -433,6 +480,80 @@
       async persistStaff(){
         try{ await db.collection('laats_turnos').doc('_staff').set({staff:JSON.parse(JSON.stringify(this.staff)),updatedAt:new Date().toISOString()}); }
         catch(e){ console.error('Error guardando personal',e); }
+      },
+
+      // ── PERSISTENCIA DE REGLAS (doc global: las MISMAS reglas para TODOS los meses) ──
+      // Antes vivían dentro de cada mes y eso era una trampa: cambiarlas en julio no servía para
+      // agosto, y moverse de mes sin guardar las borraba sin avisar. Ahora hay una sola copia,
+      // igual que el personal. Se guardan solas unos segundos después de tocarlas.
+      // Rellena los campos que falten (meses/reglas viejas guardadas antes de que existieran).
+      completarAlgorithmRules(){
+        const a=this.algorithmRules;
+        if(!a.basePorTipo)a.basePorTipo={DESPACHO:7,TURN:10,RECEPCION:8};
+        if(a.minAntesReceptores==null)a.minAntesReceptores=120;
+        if(a.minAntesBase==null)a.minAntesBase=15;
+        if(a.minAntesEncOp==null)a.minAntesEncOp=30;
+        if(a.minAntesEncargado==null)a.minAntesEncargado=a.minAntesEncOp;   // reglas viejas: heredan el valor compartido
+        if(a.minAntesOperador==null)a.minAntesOperador=a.minAntesEncOp;
+        if(a.ecofoxPorTurno==null)a.ecofoxPorTurno=3;
+      },
+      async loadReglas(){
+        try{
+          const doc=await db.collection('laats_turnos').doc('_reglas').get();
+          if(doc.exists){
+            const d=doc.data();
+            if(d.airlineRules) this.airlineRules=d.airlineRules;
+            if(d.algorithmRules) this.algorithmRules=d.algorithmRules;
+            this.completarAlgorithmRules();
+            this.initAirlineAdvOpen();
+          }
+          this.reglasCargadas=true;   // recién ahora se puede escribir en la nube sin pisarla
+        }catch(e){
+          console.error('Error cargando reglas',e);
+          this.reglasStatus='⚠️ No se pudieron leer las reglas guardadas. Revisalas antes de generar.';
+        }
+      },
+      async persistReglas(){
+        // Guarda SOLO si ya se leyó la nube: si no, un cambio temprano escribiría los valores
+        // de fábrica encima de los buenos.
+        if(!this.reglasCargadas){ this.reglasStatus=''; return; }
+        try{
+          await db.collection('laats_turnos').doc('_reglas').set(JSON.parse(JSON.stringify({
+            airlineRules:this.airlineRules, algorithmRules:this.algorithmRules, updatedAt:new Date().toISOString()
+          })));
+          this.reglasStatus='✅ Reglas guardadas — valen para todos los meses.';
+          setTimeout(()=>{ if(this.reglasStatus.startsWith('✅'))this.reglasStatus=''; },4000);
+        }catch(e){
+          console.error('Error guardando reglas',e);
+          this.reglasStatus='❌ No se pudieron guardar las reglas: '+((e&&(e.code||e.message))||e);
+        }
+      },
+      // Cualquier cambio en el panel Reglas. Espera un momento antes de mandar a la nube,
+      // para no guardar en cada tecla mientras se escribe un número.
+      reglasTocadas(){
+        this.reglasStatus='Guardando reglas…';
+        clearTimeout(this._reglasTimer);
+        this._reglasTimer=setTimeout(()=>this.persistReglas(),1500);
+      },
+      // Rescate: recupera las reglas que quedaron guardadas DENTRO del mes que está abierto
+      // (así se armaban antes) y las pone como las reglas globales.
+      async traerReglasDelMes(){
+        const cual=this.monthName+' '+this.selectedYear;
+        if(!confirm(`¿Traer las reglas que quedaron guardadas en ${cual} y usarlas para TODOS los meses?\n\nSe reemplazan las que tenés ahora.`))return;
+        this.reglasStatus='Buscando las reglas de '+cual+'…';
+        try{
+          const doc=await db.collection('laats_turnos').doc(`laats_${this.selectedYear}_${this.selectedMonth}`).get();
+          const d=doc.exists?doc.data():null;
+          if(!d||(!d.airlineRules&&!d.algorithmRules)){ this.reglasStatus='⚠️ '+cual+' no tiene reglas guardadas.'; return; }
+          if(d.airlineRules) this.airlineRules=d.airlineRules;
+          if(d.algorithmRules) this.algorithmRules=d.algorithmRules;
+          this.completarAlgorithmRules();
+          this.syncAirlineRules();     // que no falte ninguna aerolínea de los vuelos cargados
+          this.initAirlineAdvOpen();
+          await this.persistReglas();
+          this.reglasStatus='✅ Listo: ahora se usan las reglas de '+cual+' en todos los meses.';
+          setTimeout(()=>{ if(this.reglasStatus.startsWith('✅'))this.reglasStatus=''; },5000);
+        }catch(e){ console.error(e); this.reglasStatus='❌ Error: '+((e&&(e.code||e.message))||e); }
       },
 
       // ── STAFF ──
@@ -479,9 +600,10 @@
           const r=String(v==null?'':v).trim().toLowerCase();
           if(!r)return null;
           if(r==='operativo'||r.startsWith('agente'))return 'Operativo';
-          if(r.startsWith('encargado'))return 'Encargado';
+          if(r.startsWith('encargado')||r.startsWith('crewchief'))return 'Encargado';
           if(r.startsWith('operador'))return 'Operador';
           if(r.startsWith('supervisor'))return 'Supervisor';
+          if(r.startsWith('ecofox')||r.includes('faja'))return 'Ecofox';
           return null;
         };
         const norm=(v)=>String(v==null?'':v).trim();
@@ -534,7 +656,7 @@
         }
         this.persistStaff();
         this.staffImportModalOpen=false;
-        this.staffImportStatus=`✅ Personal actualizado: ${imp.parsed.length} en total (${imp.nuevos.length} nuevos, ${imp.eliminados.length} eliminados). Regenerá los turnos.`;
+        this.staffImportStatus=`Listo: ${imp.parsed.length} personas en total (${imp.nuevos.length} nuevas, ${imp.eliminados.length} dadas de baja). Hay que volver a generar los turnos.`;
         this.staffImport=null;
         setTimeout(()=>this.staffImportStatus='',8000);
       },
@@ -542,10 +664,16 @@
       // Toda aerolínea presente en los vuelos debe tener su regla editable en el panel.
       // Las nuevas entran con el default (2 receptores, o 4 si es exactamente "AA").
       syncAirlineRules(){
+        let nuevas=0;
         (this.flights||[]).forEach(f=>{
-          if(f.airline&&!this.airlineRules[f.airline])
+          if(f.airline&&!this.airlineRules[f.airline]){
             this.airlineRules[f.airline]={name:f.airline, receptores:(f.airline==='AA'?4:2)};
+            nuevas++;
+          }
         });
+        // Como las reglas son globales, una aerolínea nueva hay que dejarla guardada:
+        // si no, aparece al cargar el Excel y se pierde al recargar la página.
+        if(nuevas&&this.reglasCargadas)this.reglasTocadas();
       },
       // Abre/cierra el "Avanzado" de una aerolínea. Al abrir, crea el override de base
       // VACÍO (null = hereda el global). Solo guarda números cuando el usuario los escribe.
@@ -553,14 +681,19 @@
         this.airlineAdvOpen[key]=!this.airlineAdvOpen[key];
         const v=this.airlineRules[key];
         if(v&&!v.basePorTipo)v.basePorTipo={DESPACHO:null,TURN:null,RECEPCION:null};
+        // Campos opcionales por aerolínea (null = hereda la regla general)
+        if(v)['encargadosPorVuelo','operadoresPorVuelo','minAntesEncargado','minAntesOperador']
+          .forEach(k=>{ if(v[k]===undefined)v[k]=null; });
       },
       // Tras cargar de la nube, dejar abierto el "Avanzado" de las aerolíneas que YA tienen
-      // un override de base guardado, para que se vean (airlineAdvOpen no se persiste).
+      // algún override guardado, para que se vea (airlineAdvOpen no se persiste).
       initAirlineAdvOpen(){
-        const o={};
+        const o={}, num=(x)=>typeof x==='number'&&!isNaN(x);
         Object.entries(this.airlineRules||{}).forEach(([k,v])=>{
-          const b=v&&v.basePorTipo;
-          if(b&&[b.DESPACHO,b.TURN,b.RECEPCION].some(x=>typeof x==='number'&&!isNaN(x)))o[k]=true;
+          if(!v)return;
+          const b=v.basePorTipo||{};
+          if([b.DESPACHO,b.TURN,b.RECEPCION,v.encargadosPorVuelo,v.operadoresPorVuelo,
+              v.minAntesEncargado,v.minAntesOperador].some(num))o[k]=true;
         });
         this.airlineAdvOpen=o;
       },
@@ -681,7 +814,32 @@
  
         // Demanda por vuelo. Lee las Reglas (panel) con RESPALDO a los valores fijos validados:
         // si un campo falta (ej. mes guardado viejo), usa el default → mismo resultado de siempre.
+        // ── ECOFOX (encargados de faja) ──
+        // Puesto FIJO: N personas presentes de corrido mientras haya operación de vuelos
+        // TURN/RECEPCIÓN (desde que llega el primero hasta que sale el último). No trabajan
+        // DESPACHO y no se mezclan con rampa: tienen su propia gente y sus propios turnos.
+        const computeEcofox=(day)=>{
+          const d={};
+          // El puesto es OPCIONAL: si todavía no marcaste a nadie como Ecofox en Personal, no se
+          // pide nada (si no, aparecería como déficit gigante en meses donde el puesto no se usa).
+          if(!this.staff.some(s=>s.role==='Ecofox'&&s.active))return d;
+          const n=(typeof this.algorithmRules.ecofoxPorTurno==='number'&&!isNaN(this.algorithmRules.ecofoxPorTurno))
+            ? this.algorithmRules.ecofoxPorTurno : 3;
+          if(n<=0)return d;
+          let ini=Infinity, fin=-Infinity;
+          this.flights.filter(f=>f.active&&f.days.includes(day)&&(f.type==='TURN'||f.type==='RECEPCION')).forEach(f=>{
+            const eta=norm5(toM(f.eta)); let etd=norm5(toM(f.etd));
+            if(etd<=eta)etd+=1440;
+            if(eta<ini)ini=eta;
+            if(etd>fin)fin=etd;
+          });
+          if(ini===Infinity)return d;   // ese día no hay TURN ni RECEPCIÓN
+          for(let t=ini;t<fin;t+=STEP)d[t]=n;
+          return d;
+        };
+
         const computeDemand=(day,pool)=>{
+          if(pool==='ecofox')return computeEcofox(day);
           const AR=this.algorithmRules||{}, RULES=this.airlineRules||{};
           const numOr=(v,def)=>(typeof v==='number'&&!isNaN(v))?v:def;
           const d={};
@@ -698,9 +856,8 @@
               for(let t=Math.max(0,eta-oR);t<etd;t+=STEP)d[t]=(d[t]||0)+nE;
               for(let t=Math.max(0,eta-oB);t<etd;t+=STEP)d[t]=(d[t]||0)+nB;
             }else{
-              const cnt=numOr(pool==='encargado'?AR.encargadosPorVuelo:AR.operadoresPorVuelo,1);
-              const oE=numOr(AR.minAntesEncOp,30);
-              for(let t=Math.max(0,eta-oE);t<etd;t+=STEP)d[t]=(d[t]||0)+cnt;
+              const {cnt,lead}=this.reglaEncOper(pool,f.airline);   // por aerolínea → general → default
+              for(let t=Math.max(0,eta-lead);t<etd;t+=STEP)d[t]=(d[t]||0)+cnt;
             }
           });
           // ── Vuelos de MAÑANA que necesitan gente ANTES de medianoche ──
@@ -722,7 +879,8 @@
                 preMedianoche(numOr(AR.minAntesReceptores,120), nE);
                 preMedianoche(numOr(AR.minAntesBase,15), nB);
               }else{
-                preMedianoche(numOr(AR.minAntesEncOp,30), numOr(pool==='encargado'?AR.encargadosPorVuelo:AR.operadoresPorVuelo,1));
+                const r=this.reglaEncOper(pool,f.airline);
+                preMedianoche(r.lead, r.cnt);
               }
             });
           }
@@ -951,17 +1109,18 @@
         const rampas=this.staff.filter(s=>s.role==='Operativo'&&s.active);
         const encargados=this.staff.filter(s=>s.role==='Encargado'&&s.active);
         const operadores=this.staff.filter(s=>s.role==='Operador'&&s.active);
+        const ecofox=this.staff.filter(s=>s.role==='Ecofox'&&s.active);   // puesto propio, NO entran a rampa
         const restDays={};
-        [[rampas,'operativo'],[encargados,'encargado'],[operadores,'operador']].forEach(([emps,pl])=>{const r=computeRestDays(emps,pl);for(const id in r)restDays[id]=r[id];});
-        const diasTrabajados={}; [...rampas,...encargados,...operadores].forEach(e=>diasTrabajados[e.id]=0);
+        [[rampas,'operativo'],[encargados,'encargado'],[operadores,'operador'],[ecofox,'ecofox']].forEach(([emps,pl])=>{const r=computeRestDays(emps,pl);for(const id in r)restDays[id]=r[id];});
+        const diasTrabajados={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>diasTrabajados[e.id]=0);
         const allDeficits=[]; let demMin=0,covMin=0,gapMin=0,structMin=0,limpDemMin=0,limpGapMin=0;
-        const picoStruct={operativo:0,encargado:0,operador:0}; // máx personas que faltan disponibles en un mismo instante, por pool
-        const poolMeta={operativo:{rol:'Operativo',label:'Operativos'},encargado:{rol:'Encargado de Vuelo',label:'Encargados'},operador:{rol:'Operador',label:'Operadores'}};
- 
+        const picoStruct={operativo:0,encargado:0,operador:0,ecofox:0}; // máx personas que faltan disponibles en un mismo instante, por pool
+        const poolMeta={operativo:{rol:'Operativo',label:'Operativos'},encargado:{rol:'Encargado de Vuelo',label:'Encargados'},operador:{rol:'Operador',label:'Operadores'},ecofox:{rol:'Ecofox',label:'Ecofox'}};
+
         for(let day=1;day<=DIAS;day++){
           const dayFlights=this.flights.filter(f=>f.active&&f.days.includes(day));
           if(!dayFlights.length){
-            [...rampas,...encargados,...operadores,...this.staff.filter(s=>s.role==='Supervisor')].forEach(emp=>{
+            [...rampas,...encargados,...operadores,...ecofox,...this.staff.filter(s=>s.role==='Supervisor')].forEach(emp=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
               this.currentRoster[emp.id][day]={isDescanso:true,blocks:'-',meal:'-'};
             });
@@ -1085,6 +1244,7 @@
           const sobrEnc=procesarPool(encargados,'encargado',[],true);
           procesarPool(operadores,'operador');
           procesarPool(rampas,'operativo',sobrEnc);
+          procesarPool(ecofox,'ecofox');   // puesto aparte: su propia gente, no refuerza rampa
           // ── Etiqueta de limpieza 🧹: marca QUIÉN limpia en cada ventana (modelo compartido).
           //   Lee el roster YA armado y reparte hasta EQUIPO_LIMPIEZA limpiadores por ventana,
           //   balanceando para rotar. NO toca turnos, demanda ni cobertura: solo agrega el dato `limpieza`.
@@ -1158,11 +1318,11 @@
         const structHoras=Math.round(structMin*STEP/60);
         const limpHoras=Math.round(limpGapMin*STEP/60);
         const limpPct=limpDemMin===0?100:Math.round(100*(limpDemMin-limpGapMin)/limpDemMin);
-        const personalPico=picoStruct.operativo+picoStruct.encargado+picoStruct.operador;
-        this.coverageMetrics={percent:pct,deficientHours:gapHoras,hoursIdle:0,limpiezaPct:limpPct,limpiezaDeficit:limpHoras,estructuralHoras:structHoras,personalPico,personalPicoOp:picoStruct.operativo,personalPicoEnc:picoStruct.encargado,personalPicoOpr:picoStruct.operador};
+        const personalPico=picoStruct.operativo+picoStruct.encargado+picoStruct.operador+picoStruct.ecofox;
+        this.coverageMetrics={percent:pct,deficientHours:gapHoras,hoursIdle:0,limpiezaPct:limpPct,limpiezaDeficit:limpHoras,estructuralHoras:structHoras,personalPico,personalPicoOp:picoStruct.operativo,personalPicoEnc:picoStruct.encargado,personalPicoOpr:picoStruct.operador,personalPicoEco:picoStruct.ecofox};
         if(this.overtimeAlerts.length>0){
           // Mensaje SIMPLE en Generar turnos: solo cobertura + horas extra totales. El detalle (estructural, limpieza, personal) vive en el panel de Horas Extras.
-          this.smartAlerts=[{type:'warning',message:`Cobertura ${pct}% de ${this.monthName}. Faltan ≈${gapHoras} h extras para llegar al 100%. Ver Horas Extras.`}];
+          this.smartAlerts=[{type:'warning',message:`Se cubre el ${pct}% de ${this.monthName}. Para llegar al 100% harían falta unas ${gapHoras} horas extra. El detalle está en la pestaña Horas Extras.`}];
         }else{
           this.smartAlerts=[{type:'success',message:`Cobertura completa (100%) para todo ${this.monthName}.`}];
         }
@@ -1179,8 +1339,9 @@
               const k=toHHMM(1440+ini)+'|'+rol; previos[k]=(previos[k]||0)+n; };
             anota(numOr(AR.minAntesReceptores,120), numOr(ar.receptores,f.airline==='AA'?4:2), 'rampa');
             anota(numOr(AR.minAntesBase,15), numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type],{DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7)), 'rampa');
-            anota(numOr(AR.minAntesEncOp,30), numOr(AR.encargadosPorVuelo,1), 'encargado');
-            anota(numOr(AR.minAntesEncOp,30), numOr(AR.operadoresPorVuelo,1), 'operador');
+            const rEnc=this.reglaEncOper('encargado',f.airline), rOpr=this.reglaEncOper('operador',f.airline);
+            anota(rEnc.lead, rEnc.cnt, 'encargado');
+            anota(rOpr.lead, rOpr.cnt, 'operador');
           });
           const claves=Object.keys(previos);
           if(claves.length){
@@ -1192,7 +1353,7 @@
                                  :rol==='encargado'?(n===1?'1 encargado':n+' encargados')
                                  :(n===1?'1 operador':n+' operadores');
             const detalle=claves.sort().map(k=>{const p=k.split('|');return `${nombre(p[1],previos[k])} desde las ${p[0]}`;}).join(' · ');
-            this.smartAlerts.push({type:'warning',message:`⚠️ El día 1 tiene vuelo de madrugada: necesitás ${detalle} del ${dp} de ${MES[mp-1]}. Esa noche pertenece al horario de ${MES[mp-1]} — asignala a mano en sus Horas Extras (el motor no puede escribir en otro mes).`});
+            this.smartAlerts.push({type:'warning',message:`⚠️ El día 1 tiene vuelo de madrugada: hacen falta ${detalle} del ${dp} de ${MES[mp-1]}. Esa noche es parte del horario de ${MES[mp-1]}, así que el programa no puede armarla desde acá: hay que asignarla a mano en las Horas Extras de ${MES[mp-1]}.`});
           }
         }
       },
@@ -1292,19 +1453,247 @@
           const r=roster[emp.id]; if(!r)return;
           for(const day in r){
             const st=r[day]; if(!st||st.isDescanso)continue;
-            const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(mm=>{let s=(+mm[1])*60+(+mm[2]),e=(+mm[3])*60+(+mm[4]);if(e<=s)e+=1440;return e-s;});
+            const segs=[...String(st.blocks).matchAll(/(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})/g)].map(mm=>{let s=(+mm[1])*60+(+mm[2]),e=(+mm[3])*60+(+mm[4]);if(e<=s)e+=1440;return [s,e];});
             if(!segs.length)continue;
-            const ext=segs.reduce((a,d)=>a+d,0)-600;
+            const ext=segs.reduce((a,d)=>a+(d[1]-d[0]),0)-600;
             if(ext>0){
               if(!summary[emp.name])summary[emp.name]={name:emp.name,slots:[],totalMins:0,extensionMins:0};
               summary[emp.name].extensionMins=(summary[emp.name].extensionMins||0)+ext;
               summary[emp.name].totalMins+=ext;
-              summary[emp.name].slots.push({day:+day,label:'Turno extendido +'+ext+'min',rol:emp.role,start:0,end:0,mins:ext,extension:true});
+              // Ventana del RATO QUE SE QUEDÓ DE MÁS = la cola del último bloque del turno.
+              // Sirve para mostrar qué vuelos seguían en tierra en ese rato (pestaña Horas Extras).
+              // Si la extensión es más larga que ese bloque, se toma el bloque completo.
+              const ult=segs.reduce((a,b)=>b[1]>a[1]?b:a);
+              const eFin=ult[1], eIni=Math.max(ult[0],eFin-ext);
+              summary[emp.name].slots.push({day:+day,label:'Turno extendido +'+ext+'min',rol:emp.role,start:eIni,end:eFin,mins:ext,extension:true});
             }
           }
         });
         return Object.values(summary).sort((a,b)=>b.totalMins-a.totalMins);
       },
+
+      // ── QUÉ VUELOS SE CUBREN EN UNA FRANJA (detalle de horas extras) ──
+      // Cruza día + rol + horario con los vuelos activos, usando los MISMOS minutos de anticipo
+      // que usa el motor (`computeDemand`): por aerolínea → general → default. Así lo que se
+      // muestra es exactamente lo que generó esa necesidad de gente.
+      // El eje de minutos es el del DÍA (un vuelo que sale a las 01:00 llega a 1500), igual que
+      // en el motor: por eso una franja de 23:30 y un vuelo de madrugada se cruzan bien.
+      vuelosDeFranja(day,rol,start,end){
+        if(!day||!(end>start)||!this.flights)return [];
+        const AR=this.algorithmRules||{}, RULES=this.airlineRules||{};
+        const numOr=(v,def)=>(typeof v==='number'&&!isNaN(v))?v:def;
+        const norm5=(m)=>Math.round(m/5)*5;
+        const esEco=rol==='Ecofox';
+        // Minutos de anticipo según el rol. Rampa junta receptores (mucho anticipo) y base (poco):
+        // la gente empieza a hacer falta con el que llega primero.
+        const leadDe=(f)=>{
+          if(esEco)return 0;   // Ecofox está de corrido mientras hay aviones en tierra
+          if(rol==='Operativo')return Math.max(numOr(AR.minAntesReceptores,120),numOr(AR.minAntesBase,15));
+          if(rol==='Encargado'||rol==='Encargado de Vuelo')return this.reglaEncOper('encargado',f.airline).lead;
+          if(rol==='Operador')return this.reglaEncOper('operador',f.airline).lead;
+          return 0;
+        };
+        const sirve=(f)=>f.active&&(!esEco||f.type==='TURN'||f.type==='RECEPCION');
+        const res=[];
+        // Vuelos de ESE día
+        this.flights.filter(f=>sirve(f)&&(f.days||[]).includes(day)).forEach(f=>{
+          const eta=norm5(this.toMins(f.eta)); let etd=norm5(this.toMins(f.etd));
+          if(etd<=eta)etd+=1440;
+          const s=Math.max(0,eta-leadDe(f));
+          if(start<etd&&s<end)res.push({f,eta,etd,prep:s,dia:day});
+        });
+        // Vuelos de MADRUGADA del día siguiente: piden gente ANTES de medianoche, así que ese
+        // rato pertenece a la noche de HOY (mismo criterio que el motor).
+        if(day<this.daysInMonth){
+          this.flights.filter(f=>sirve(f)&&(f.days||[]).includes(day+1)).forEach(f=>{
+            const eta=norm5(this.toMins(f.eta)); let etd=norm5(this.toMins(f.etd));
+            if(etd<=eta)etd+=1440;
+            const s=eta-leadDe(f);
+            if(s>=0)return;                       // no cruza medianoche: es problema del otro día
+            if(start<1440&&1440+s<end)res.push({f,eta:eta+1440,etd:etd+1440,prep:1440+s,dia:day+1});
+          });
+        }
+        return res.sort((a,b)=>a.prep-b.prep).map(r=>({
+          key:(r.f.id||(r.f.airline+r.f.flightNo))+'|'+r.dia+'|'+r.prep,
+          vuelo:r.f.airline+(r.f.flightNo?' '+r.f.flightNo:''),
+          tipo:r.f.type,
+          horas:this.toHHMM(r.eta)+' → '+this.toHHMM(r.etd),
+          prep:r.prep<r.eta?this.toHHMM(r.prep):'',
+          otroDia:r.dia!==day?r.dia:0,
+          // cuánto rato de la franja pisa este vuelo (para repartirle las horas en el Reporte)
+          solape:Math.max(0,Math.min(end,r.etd)-Math.max(start,r.prep)),
+          orden:r.prep
+        }));
+      },
+      // Los vuelos de un renglón del detalle (franja asignada o turno extendido).
+      vuelosDeSlot(s){
+        if(!s||!(s.end>s.start))return [];
+        return this.vuelosDeFranja(s.day,s.rol,s.start,s.end);
+      },
+
+      // ── PESTAÑA "REPORTE": horas extra USADAS por día ──
+      // Sale del MISMO overtimeSummary que alimenta la tabla de Horas Extras (asignadas a mano
+      // + extensiones automáticas), así los dos números siempre cuadran. NO es el déficit.
+      get repDias(){
+        const porDia={};
+        for(let d=1;d<=this.daysInMonth;d++)porDia[d]={dia:d,min:0};
+        (this.overtimeSummary||[]).forEach(p=>(p.slots||[]).forEach(s=>{
+          const d=+s.day; if(porDia[d])porDia[d].min+=s.mins||0;
+        }));
+        const arr=Object.values(porDia);
+        const max=arr.reduce((m,r)=>Math.max(m,r.min),0);
+        return arr.map(r=>({...r, horas:Math.round(r.min/6)/10, pct:max>0?Math.round(100*r.min/max):0}));
+      },
+      get repTotalHoras(){ return Math.round((this.repDias.reduce((a,r)=>a+r.min,0))/6)/10; },
+      get repDiaPico(){ return this.repDias.reduce((b,r)=>r.min>b.min?r:b,{dia:0,min:0,horas:0}); },
+      get repDiasConExtras(){ return this.repDias.filter(r=>r.min>0).length; },
+      get repDetalleSel(){ return this.repDia?this.repDetalle(this.repDia):null; },
+
+      // Detalle de un día para presentar: quién trabajó, cuánta gente hubiera hecho falta
+      // (las dos lecturas) y las horas extra usadas, por rol y por persona.
+      repDetalle(dia){
+        const min=(m)=>Math.round((m||0)/6)/10;
+        const personas=[];
+        (this.overtimeSummary||[]).forEach(p=>{
+          const ss=(p.slots||[]).filter(s=>+s.day===dia);
+          if(!ss.length)return;
+          personas.push({name:p.name, min:ss.reduce((a,s)=>a+(s.mins||0),0), slots:ss});
+        });
+        personas.sort((a,b)=>b.min-a.min);
+        const minExtra=personas.reduce((a,p)=>a+p.min,0);
+        // ── Gente con turno ese día ──
+        // Los SUPERVISORES NO entran (decisión de Mynor): el número es de personal de la operación,
+        // que es el que falta o sobra. Van aparte, solo como dato.
+        const enTurno=new Set(); const rolDe={}; let supervisores=0, descansando=0, operativos=0;
+        this.staff.forEach(e=>{
+          rolDe[e.name]=e.role;
+          if(!e.active)return;                 // inhabilitados: el motor no les da turno, no son "descanso"
+          const st=(this.currentRoster[e.id]||{})[dia];
+          if(e.role==='Supervisor'){ if(st&&!st.isDescanso)supervisores++; return; }
+          operativos++;
+          if(!st||st.isDescanso){descansando++;return;}
+          enTurno.add(e.name);
+        });
+        const trabajaron=enTurno.size;
+        // Los que vinieron en su DÍA LIBRE solo a cubrir horas extra: NO van dentro del número
+        // (si no, se contarían dos veces con las personas que hacen falta), pero se avisan aparte.
+        const deDescanso=personas.filter(p=>rolDe[p.name]&&rolDe[p.name]!=='Supervisor'&&!enTurno.has(p.name)).length;
+        // (A) Para NO pagar horas extra: cada persona de más cubre una jornada de 10 h.
+        const masParaNoPagar=Math.ceil(minExtra/600);
+        // (B) Lo que quedó DESTAPADO ese día: el pico de gente faltante al mismo tiempo,
+        //     sumando todas las franjas de déficit que se pisan (rampa + crewchiefs + operadores).
+        const franjas=(this.overtimeAlerts||[]).filter(a=>a.day===dia);
+        let pico=0;
+        if(franjas.length){
+          const pts=[...new Set(franjas.map(f=>f.start))].sort((a,b)=>a-b);
+          pts.forEach(t=>{
+            const n=franjas.filter(f=>f.start<=t&&t<f.end).reduce((a,f)=>a+(f.personasReales||f.faltantes||0),0);
+            if(n>pico)pico=n;
+          });
+        }
+        const porRol={};
+        personas.forEach(p=>p.slots.forEach(s=>{const r=this.roleLabel(s.rol||'—');porRol[r]=(porRol[r]||0)+(s.mins||0);}));
+        // ── QUÉ VUELOS PIDIERON ESAS HORAS EXTRA ──
+        // Las horas de cada franja se reparten entre los vuelos que la pisan, en proporción
+        // al rato que cada uno se pisa con ella → la suma por vuelo da el total del día.
+        const acc={}; let sueltosMin=0;
+        personas.forEach(p=>p.slots.forEach(s=>{
+          const vs=this.vuelosDeSlot(s);
+          const peso=vs.map(v=>v.solape>0?v.solape:1);
+          const tot=peso.reduce((a,b)=>a+b,0);
+          if(!vs.length||tot<=0){ sueltosMin+=s.mins||0; return; }
+          vs.forEach((v,i)=>{
+            const k=v.vuelo+'|'+v.horas;
+            if(!acc[k])acc[k]={vuelo:v.vuelo,tipo:v.tipo,cuando:v.horas,min:0,gente:new Set(),orden:v.orden};
+            acc[k].min+=(s.mins||0)*peso[i]/tot;
+            acc[k].gente.add(p.name);
+          });
+        }));
+        // Redondeo con RESTO MAYOR: cada renglón sale con 1 decimal pero la suma de la columna
+        // da EXACTO el total del día (si no, el jefe suma la columna y no le cuadra el número grande).
+        const partes=[...Object.values(acc), ...(sueltosMin>0?[{suelto:true,min:sueltosMin}]:[])];
+        const decTotal=Math.round(minExtra/6);                        // total del día en décimas de hora
+        const dec=partes.map(p=>Math.floor(p.min/6));
+        let resto=decTotal-dec.reduce((a,b)=>a+b,0);
+        const porFraccion=partes.map((p,i)=>({i,frac:p.min/6-dec[i]})).sort((a,b)=>b.frac-a.frac);
+        for(let k=0;k<porFraccion.length&&resto>0;k++){dec[porFraccion[k].i]++;resto--;}
+        for(let k=porFraccion.length-1;k>=0&&resto<0;k--){if(dec[porFraccion[k].i]>0){dec[porFraccion[k].i]--;resto++;}}
+        // Los que quedan en 0.0 h no se listan (aportaron casi nada; al valer 0 no descuadran la suma).
+        const sueltos=partes.reduce((a,p,i)=>a+(p.suelto?dec[i]/10:0),0);
+        const vuelos=partes.map((p,i)=>({...p,horas:dec[i]/10}))
+          .filter(p=>!p.suelto&&p.horas>0)
+          .map(v=>({vuelo:v.vuelo,tipo:v.tipo,cuando:v.cuando,horas:v.horas,personas:v.gente.size,orden:v.orden}))
+          .sort((a,b)=>b.horas-a.horas||a.orden-b.orden);
+        return {
+          dia, trabajaron, supervisores, deDescanso, descansando, operativos, horas:min(minExtra),
+          masParaNoPagar, sinExtras:trabajaron+masParaNoPagar,
+          faltaronPico:pico, sinHuecos:trabajaron+pico,
+          franjas:franjas.length,
+          personas:personas.map(p=>({...p,horas:min(p.min)})),
+          vuelos, sueltos,   // ya viene en horas del reparto de arriba (NO pasarlo por min())
+          porRol:Object.entries(porRol).map(([rol,m])=>({rol,horas:min(m)})).sort((a,b)=>b.horas-a.horas)
+        };
+      },
+      // ── Animaciones del Reporte ──
+      // Entrada: las barras arrancan en cero y crecen una tras otra (el retardo lo pone
+      // cada barra según su día). Se dispara al abrir la pestaña.
+      // OJO: no usar $nextTick acá. Si repEntrada ya está en false, Alpine no tiene nada que
+      // recalcular y la llamada de vuelta puede no ejecutarse nunca. Con setTimeout siempre corre.
+      repAnimarEntrada(){
+        this.repEntrada=false;      // las barras vuelven a cero (sin animación, ver el :style)
+        clearTimeout(this._repTimer);
+        this._repTimer=setTimeout(()=>{ this.repEntrada=true; },60);
+      },
+      get repSinMovimiento(){
+        try{ return window.matchMedia('(prefers-reduced-motion:reduce)').matches; }catch(e){ return false; }
+      },
+      // Los números del detalle suben contando hasta su valor.
+      repContar(d){
+        if(!d)return;
+        const fin={horas:d.horas,trabajaron:d.trabajaron,descansando:d.descansando};
+        if(this.repSinMovimiento){ this.repAnim={...fin}; return; }
+        const t0=performance.now(), dur=600;
+        const paso=(t)=>{
+          if(this.repDia!==d.dia)return;                 // cambió de día: cortar este conteo
+          const p=Math.min(1,(t-t0)/dur), e=1-Math.pow(1-p,3);
+          this.repAnim={ horas:Math.round(fin.horas*e*10)/10,
+                         trabajaron:Math.round(fin.trabajaron*e),
+                         descansando:Math.round(fin.descansando*e) };
+          if(p<1)requestAnimationFrame(paso); else this.repAnim={...fin};
+        };
+        requestAnimationFrame(paso);
+        // Red de seguridad: si el navegador pausa las animaciones (pestaña en segundo plano),
+        // requestAnimationFrame no corre y los números quedarían en cero. Esto los deja en su valor.
+        clearTimeout(this._repCuenta);
+        this._repCuenta=setTimeout(()=>{ if(this.repDia===d.dia)this.repAnim={...fin}; },dur+120);
+      },
+      // Abrir/cerrar un día desde la gráfica.
+      repElegir(dia){
+        if(this.repDia===dia){ this.repDia=null; return; }
+        this.repDia=dia;
+        this.repContar(this.repDetalle(dia));
+      },
+      exportReporte(){
+        const data=this.repDias.map(r=>{
+          const d=this.repDetalle(r.dia);
+          return {
+            'Día':r.dia,
+            'Horas extra usadas':r.horas,
+            'Personas de la operación con turno':d.trabajaron,
+            'Vinieron en su día libre':d.deDescanso,
+            'Supervisores (aparte)':d.supervisores,
+            'Necesarias para no usar horas extra':d.sinExtras,
+            'Faltaron al mismo tiempo':d.faltaronPico,
+            'Necesarias para no dejar huecos':d.sinHuecos
+          };
+        });
+        data.push({'Día':'TOTAL','Horas extra usadas':this.repTotalHoras});
+        const ws=XLSX.utils.json_to_sheet(data);
+        const wb=XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb,ws,'Reporte por día');
+        XLSX.writeFile(wb,`LAATS_Reporte_${this.monthName}_${this.selectedYear}.xlsx`);
+      },
+
       // Avance de cobertura de extras: cuánto del déficit ya está tapado por lo que asignaste.
       // Se mide sobre las MISMAS franjas del panel (Σ deficitMin = el número grande ≈X h) y cuenta
       // cada franja en proporción a la gente asignada (una cubierta a medias también suma su parte).
@@ -1388,7 +1777,7 @@
         const larga=(slot.end-slot.start)>=180;
         const r=(e)=>{const st=this.getRosterStatus(e.id,slot.day);const desc=st.isDescanso;if(larga)return desc?0:1;return desc?(st.blocks==='Descanso semanal'?1:2):0;};
         // Solo el MISMO rol puede cubrir la franja: un operativo no cubre a un encargado, etc.
-        const roleMap={'Operativo':'Operativo','Encargado de Vuelo':'Encargado','Operador':'Operador'};
+        const roleMap={'Operativo':'Operativo','Encargado de Vuelo':'Encargado','Operador':'Operador','Ecofox':'Ecofox'};
         const rolStaff=roleMap[slot.rol]||slot.rol;
         this.extrasCandidates=this.staff.filter(s=>s.active&&s.role===rolStaff).sort((a,b)=>(su(a)-su(b))||(r(a)-r(b)));
         this.extraConflicts={}; this.extrasCandidates.forEach(e=>{this.extraConflicts[e.id]=this.extraConflict(e,slot);});
@@ -1404,7 +1793,7 @@
         if(!slot)return out;
         const MAXGAP=30; // espera/anticipo máximo considerado "pegado" (30 min)
         const fmt=(m)=>{const v=((m%1440)+1440)%1440;return String(Math.floor(v/60)).padStart(2,'0')+':'+String(v%60).padStart(2,'0');};
-        const roleMap={'Operativo':'Operativo','Encargado de Vuelo':'Encargado','Operador':'Operador'};
+        const roleMap={'Operativo':'Operativo','Encargado de Vuelo':'Encargado','Operador':'Operador','Ecofox':'Ecofox'};
         const role=roleMap[slot.rol]||slot.rol;
         const sS=((slot.start%1440)+1440)%1440, sE=((slot.end%1440)+1440)%1440;
         this.staff.filter(s=>s.active&&s.role===role).forEach(emp=>{
@@ -1415,11 +1804,11 @@
           let note=null,dist=Infinity;
           segs.forEach(([s,e])=>{
             const gapB=((sS-e)%1440+1440)%1440; // min entre su salida y el inicio del hueco
-            if(gapB<=MAXGAP&&gapB<dist){dist=gapB;note=`sale a las ${fmt(e)}, ${gapB===0?'justo al inicio del hueco':gapB+' min antes del hueco'}`;}
+            if(gapB<=MAXGAP&&gapB<dist){dist=gapB;note=`sale a las ${fmt(e)}, ${gapB===0?'justo cuando empieza la franja':gapB+' min antes de la franja'}`;}
             const gapA=((s-sE)%1440+1440)%1440; // min entre el fin del hueco y su entrada
-            if(gapA<=MAXGAP&&gapA<dist){dist=gapA;note=`entra a las ${fmt(s)}, ${gapA===0?'justo al terminar el hueco':gapA+' min después del hueco'}`;}
+            if(gapA<=MAXGAP&&gapA<dist){dist=gapA;note=`entra a las ${fmt(s)}, ${gapA===0?'justo cuando termina la franja':gapA+' min después de la franja'}`;}
           });
-          if(segs.length===2&&sS<=sE&&sS>=segs[0][1]&&sE<=segs[1][0]){dist=-1;note=`el hueco cae en la pausa de su turno partido (${fmt(segs[0][1])} - ${fmt(segs[1][0])})`;}
+          if(segs.length===2&&sS<=sE&&sS>=segs[0][1]&&sE<=segs[1][0]){dist=-1;note=`la franja cae en la pausa de su turno partido (${fmt(segs[0][1])} - ${fmt(segs[1][0])})`;}
           if(note)out[emp.name]={note,dist};
         });
         return out;
@@ -1465,9 +1854,17 @@
       },
  
       // ── CRUD VUELOS ──
-      addNewFlight(){this.editingFlight={id:'new',airline:'AA',flightNo:'',type:'TURN',eta:'12:00',etd:'13:00',days:[1],active:true};},
-      editFlight(f){this.editingFlight=JSON.parse(JSON.stringify(f));},
+      // Los días se escriben en un campo de TEXTO libre (flightDaysText) y recién se convierten a
+      // números al guardar. Antes se convertían en cada tecla y eso borraba la coma al escribirla.
+      addNewFlight(){this.editingFlight={id:'new',airline:'AA',flightNo:'',type:'TURN',eta:'12:00',etd:'13:00',days:[1],active:true};this.flightDaysText='1';},
+      editFlight(f){this.editingFlight=JSON.parse(JSON.stringify(f));this.flightDaysText=(f.days||[]).join(', ');},
+      parseFlightDays(){
+        const dias=[...new Set(String(this.flightDaysText||'').split(/[,;\s]+/)
+          .map(n=>parseInt(n,10)).filter(n=>!isNaN(n)&&n>=1&&n<=31))].sort((a,b)=>a-b);
+        return dias;
+      },
       saveFlight(){
+        this.editingFlight.days=this.parseFlightDays();
         if(this.editingFlight.id==='new'){this.editingFlight.id='F'+Date.now();this.flights.unshift(this.editingFlight);}
         else{const i=this.flights.findIndex(f=>f.id===this.editingFlight.id);if(i>-1)this.flights[i]=this.editingFlight;}
         this.editingFlight=null;
@@ -1502,6 +1899,15 @@
         const i=this.staff.findIndex(s=>s.id===this.selectedStaffToDisable.id);
         if(i>-1){this.staff[i].active=false;this.staff[i].disableReason=this.disableReason;}
         this.disableModalOpen=false;
+        this.persistStaff();
+      },
+      // Chequesito de Ecofox en la lista de Personal. Al marcarlo, la persona pasa al puesto
+      // Ecofox (sale del pool de rampa). Al desmarcarlo vuelve a su puesto anterior.
+      toggleEcofox(emp){
+        const i=this.staff.findIndex(s=>s.id===emp.id); if(i<0)return;
+        const s=this.staff[i];
+        if(s.role==='Ecofox'){ s.role=s.rolePrevio||'Operativo'; delete s.rolePrevio; }
+        else { s.rolePrevio=s.role; s.role='Ecofox'; }
         this.persistStaff();
       },
       enableStaff(emp){const i=this.staff.findIndex(s=>s.id===emp.id);if(i>-1){this.staff[i].active=true;this.staff[i].disableReason='';}this.persistStaff();},
@@ -1545,7 +1951,7 @@
       },
       async processParsedRows(rows){
         try{
-          if(rows.length<3){this.csvStatus='Archivo muy corto.';return;}
+          if(rows.length<3){this.csvStatus='El archivo está vacío o le faltan filas.';return;}
           // Fila 0: JUNIO, null, null, null, 1, 2, 3... (números de día desde col 4)
           // Fila 1: AEROLINEA, TIPO, ETA, ETD, LUNES, MARTES...
           // Fila 2+: datos
@@ -1615,11 +2021,11 @@
             this.currentRoster={};
             this.csvStatus=`✅ ${count} vuelos cargados (${[...new Set(parsed.map(f=>f.type))].join(', ')}). Regenerá los turnos.`;
           }else{
-            this.csvStatus='No se detectaron vuelos con el nuevo formato.';
+            this.csvStatus='No se encontraron vuelos. El Excel tiene que traer las columnas de siempre: Aerolínea, Tipo, ETA, ETD y los días del mes.';
           }
         }catch(e){
           console.error(e);
-          this.csvStatus='Error procesando el archivo: '+e.message;
+          this.csvStatus='No se pudo leer el archivo: '+e.message;
         }
       },
  
@@ -1668,10 +2074,33 @@
  
       // ── HELPERS UI ──
       // Nombre del rol para MOSTRAR (el valor interno sigue siendo 'Operativo').
-      roleLabel(r){ return r==='Operativo'?'Agente de rampa':r; },
+      // Regla efectiva de Crewchief / Operador para un vuelo: cuántos y con cuántos minutos de
+      // anticipo entran. Orden: override de la AEROLÍNEA → regla GENERAL → valor por defecto.
+      // (minAntesEncOp era el campo viejo COMPARTIDO por los dos; se respeta para los meses ya
+      //  guardados que todavía lo tengan.)
+      reglaEncOper(pool,airline){
+        const AR=this.algorithmRules||{}, ar=(this.airlineRules||{})[airline]||{};
+        const numOr=(v,def)=>(typeof v==='number'&&!isNaN(v))?v:def;
+        const esEnc=pool==='encargado';
+        return {
+          cnt: numOr(esEnc?ar.encargadosPorVuelo:ar.operadoresPorVuelo,
+               numOr(esEnc?AR.encargadosPorVuelo:AR.operadoresPorVuelo,1)),
+          lead:numOr(esEnc?ar.minAntesEncargado:ar.minAntesOperador,
+               numOr(esEnc?AR.minAntesEncargado:AR.minAntesOperador,
+               numOr(AR.minAntesEncOp,30)))
+        };
+      },
+      // Nombre que se MUESTRA de cada puesto. El valor interno no cambia (para no romper los
+      // meses ya guardados): 'Operativo' se ve "Agente de rampa" y 'Encargado' se ve "Crewchief".
+      roleLabel(r){
+        if(r==='Operativo')return 'Agente de rampa';
+        if(r==='Encargado'||r==='Encargado de Vuelo')return 'Crewchief';
+        return r;
+      },
       getRoleColor(r){
         if(r==='Encargado')return'pill-blue';
         if(r==='Operador')return'pill-green';
+        if(r==='Ecofox')return'pill-purple';
         if(r==='Supervisor')return'pill-amber';
         return'pill-gray';
       },
@@ -1704,7 +2133,7 @@
       </div>
     </div>
     <h2 class="text-primary font-bold text-2xl mb-1">Bienvenido</h2>
-    <p class="text-secondary text-sm mb-6">Ingresa tus credenciales para continuar.</p>
+    <p class="text-secondary text-sm mb-6">Correo y contraseña para ingresar.</p>
     <div class="space-y-3">
       <div>
         <label class="text-xs font-600 text-secondary block mb-1.5">Correo electrónico</label>
@@ -1752,7 +2181,7 @@
       <button @click="mobileMenuOpen=false" class="text-secondary text-xl">✕</button>
     </div>
     <nav class="p-4 flex flex-col gap-1">
-      <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Asignación de horas'},{id:'resumen_extras',label:'Horas Extras'}]">
+      <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Asignación de horas'},{id:'resumen_extras',label:'Horas Extras'},{id:'reporte',label:'Reporte'}]">
         <button @click="currentTab=item.id;mobileMenuOpen=false;if(item.id==='resumen_extras'&&!prevCargado)loadPrevMonthOvertime()"
           :class="currentTab===item.id?'nav-btn active':'nav-btn'"
           class="text-left w-full relative">
@@ -1786,7 +2215,7 @@
       </div>
  
       <nav class="hidden md:flex items-center gap-1">
-        <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Asignación de horas'},{id:'resumen_extras',label:'Horas Extras'}]">
+        <template x-for="item in [{id:'inicio',label:'Inicio'},{id:'itinerarios',label:'Vuelos'},{id:'personal',label:'Personal'},{id:'reglas',label:'Reglas'},{id:'generar_turnos',label:'Generar Turnos'},{id:'horas_extras',label:'Asignación de horas'},{id:'resumen_extras',label:'Horas Extras'},{id:'reporte',label:'Reporte'}]">
           <button @click="currentTab=item.id;if(item.id==='resumen_extras'&&!prevCargado)loadPrevMonthOvertime()" :class="currentTab===item.id?'nav-btn active':'nav-btn'" class="relative">
             <span x-text="item.label"></span>
             <template x-if="item.id==='horas_extras' && overtimeAlerts.length>0">
@@ -1837,7 +2266,7 @@
       <div class="card p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <div class="text-sm font-bold text-primary">📅 Mes de trabajo</div>
-          <div class="text-xs text-secondary">Se toma del Excel al cargarlo. Cambialo aquí para ver otro mes guardado.</div>
+          <div class="text-xs text-secondary">Se toma del Excel al cargarlo. Se puede cambiar acá para ver otro mes guardado.</div>
         </div>
         <div class="flex items-center gap-2">
           <select x-model.number="selectedMonth" @change="selectMonth()" class="input-field w-40">
@@ -1897,7 +2326,7 @@
         <div class="card p-5">
           <div class="text-xs font-600 text-secondary uppercase tracking-wide mb-2">Cobertura</div>
           <div class="text-3xl font-bold" :style="coverageMetrics.percent>=100?'color:#3DBF82':'color:#F59E0B'" x-text="scheduleGenerated?coverageMetrics.percent+'%':'—'"></div>
-          <div class="text-xs text-tertiary mt-1">Del turno generado</div>
+          <div class="text-xs text-tertiary mt-1">Según el horario que se generó</div>
         </div>
       </div>
  
@@ -1913,7 +2342,7 @@
         <div x-show="liveFlights.length===0" class="text-center py-8 text-secondary">
           <div class="text-3xl mb-2">✈️</div>
           <p class="text-sm">Sin vuelos en operación ahora.</p>
-          <p class="text-xs text-tertiary mt-1" x-show="flights.length===0">Carga un itinerario en la sección Vuelos.</p>
+          <p class="text-xs text-tertiary mt-1" x-show="flights.length===0">Falta cargar un itinerario en la sección Vuelos.</p>
         </div>
         <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
           <template x-for="f in liveFlights" :key="f.id">
@@ -1951,7 +2380,7 @@
  
       <div x-show="!scheduleGenerated" class="card p-8 text-center" style="border:2px dashed var(--border)">
         <div class="text-4xl mb-3">📅</div>
-        <p class="text-secondary text-sm mb-3">Genera los turnos para ver el panel en vivo.</p>
+        <p class="text-secondary text-sm mb-3">Falta generar los turnos para ver el panel en vivo.</p>
         <button @click="currentTab='generar_turnos'" class="btn-primary">Ir a Generar Turnos</button>
       </div>
     </div>
@@ -2050,7 +2479,15 @@
             <tbody>
               <template x-for="emp in getFilteredStaff()" :key="emp.id">
                 <tr class="flight-row" :class="!emp.active&&'opacity-50'">
-                  <td class="p-4"><div class="font-semibold text-primary text-sm" x-text="emp.name"></div><div class="text-xs text-tertiary mono" x-text="emp.id"></div></td>
+                  <td class="p-4">
+                    <label class="flex items-start gap-2 cursor-pointer" :title="emp.role==='Ecofox'?'Quitar de Ecofox (vuelve a Agente de rampa)':'Marcar como Ecofox (encargado de faja)'">
+                      <input type="checkbox" class="mt-1 shrink-0" :checked="emp.role==='Ecofox'" @change="toggleEcofox(emp)">
+                      <span>
+                        <span class="font-semibold text-primary text-sm block" x-text="emp.name"></span>
+                        <span class="text-xs text-tertiary mono" x-text="emp.id"></span>
+                      </span>
+                    </label>
+                  </td>
                   <td class="p-4"><span :class="getRoleColor(emp.role)" x-text="roleLabel(emp.role)"></span></td>
                   <td class="p-4 text-center"><span x-show="emp.active" class="pill-green">Activo</span><span x-show="!emp.active" class="pill-red">Inactivo</span></td>
                   <td class="p-4 text-xs text-secondary mobile-hide" x-text="emp.disableReason||'—'"></td>
@@ -2069,18 +2506,33 @@
     </div>
  
     <!-- ═══════ REGLAS ═══════ -->
-    <div x-show="currentTab==='reglas'" class="space-y-5">
+    <div x-show="currentTab==='reglas'" class="space-y-5" @input="reglasTocadas()" @change="reglasTocadas()">
+      <div class="card p-5">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-lg font-bold text-primary mb-1">Estas reglas valen para <span style="color:#3DBF82">todos los meses</span></h2>
+            <p class="text-sm text-secondary">Un cambio acá aplica a cualquier mes que se genere, pasado o nuevo. Se guardan solas.</p>
+            <p class="text-[11px] text-tertiary mt-1">Los horarios ya generados no se rehacen solos: las reglas nuevas entran al volver a darle a <b>Generar Turnos</b>.</p>
+          </div>
+          <button @click="traerReglasDelMes()" class="btn-outline text-xs shrink-0" :title="'Recupera las reglas que quedaron guardadas dentro de '+monthName+' '+selectedYear">
+            ↩︎ Traer las de <span x-text="monthName"></span>
+          </button>
+        </div>
+        <div x-show="reglasStatus" class="text-xs mt-3 font-semibold"
+          :style="reglasStatus.startsWith('✅')?'color:#3DBF82':(reglasStatus.startsWith('❌')||reglasStatus.startsWith('⚠️')?'color:#EF4444':'color:var(--text-secondary)')"
+          x-text="reglasStatus"></div>
+      </div>
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
         <div class="card p-6">
-          <h3 class="font-bold text-primary text-base mb-1">Reglas del Algoritmo</h3>
-          <p class="text-xs text-secondary mb-5">Modificar estos valores afecta el cálculo al siguiente "Generar Turnos".</p>
+          <h3 class="font-bold text-primary text-base mb-1">Reglas para armar los turnos</h3>
+          <p class="text-xs text-secondary mb-5">Los cambios se aplican la próxima vez que se generen los turnos.</p>
           <div class="space-y-4">
             <div class="grid grid-cols-2 gap-3">
-              <div><label class="text-xs font-600 text-secondary block mb-1.5">Encargados por vuelo</label><input type="number" x-model.number="algorithmRules.encargadosPorVuelo" class="input-field"></div>
+              <div><label class="text-xs font-600 text-secondary block mb-1.5">Crewchiefs por vuelo</label><input type="number" x-model.number="algorithmRules.encargadosPorVuelo" class="input-field"></div>
               <div><label class="text-xs font-600 text-secondary block mb-1.5">Operadores por vuelo</label><input type="number" x-model.number="algorithmRules.operadoresPorVuelo" class="input-field"></div>
             </div>
             <div>
-              <label class="text-xs font-600 text-secondary block mb-1.5">Personal base por tipo de vuelo (rampa + maleteros — la ola principal)</label>
+              <label class="text-xs font-600 text-secondary block mb-1.5">Cuánta gente de rampa lleva cada vuelo, según el tipo</label>
               <div class="grid grid-cols-3 gap-3">
                 <div><label class="text-[10px] text-tertiary uppercase block mb-1">Despacho</label><input type="number" x-model.number="algorithmRules.basePorTipo.DESPACHO" class="input-field"></div>
                 <div><label class="text-[10px] text-tertiary uppercase block mb-1">Turn</label><input type="number" x-model.number="algorithmRules.basePorTipo.TURN" class="input-field"></div>
@@ -2088,19 +2540,27 @@
               </div>
             </div>
             <div>
-              <label class="text-xs font-600 text-secondary block mb-1.5">Minutos antes del vuelo (cuándo entra cada grupo)</label>
-              <div class="grid grid-cols-3 gap-3">
+              <label class="text-xs font-600 text-secondary block mb-1.5">Cuántos minutos antes del vuelo entra cada grupo</label>
+              <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 <div><label class="text-[10px] text-tertiary uppercase block mb-1">Receptores</label><input type="number" x-model.number="algorithmRules.minAntesReceptores" class="input-field"></div>
                 <div><label class="text-[10px] text-tertiary uppercase block mb-1">Base</label><input type="number" x-model.number="algorithmRules.minAntesBase" class="input-field"></div>
-                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Enc./Oper.</label><input type="number" x-model.number="algorithmRules.minAntesEncOp" class="input-field"></div>
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Crewchief</label><input type="number" x-model.number="algorithmRules.minAntesEncargado" class="input-field"></div>
+                <div><label class="text-[10px] text-tertiary uppercase block mb-1">Operador</label><input type="number" x-model.number="algorithmRules.minAntesOperador" class="input-field"></div>
               </div>
             </div>
-            <p class="text-xs text-tertiary">Los turnos son de 10h (corrido o partido con gap de 3h), fijo por diseño.</p>
+            <div>
+              <label class="text-xs font-600 text-secondary block mb-1.5">Ecofox (encargados de faja)</label>
+              <div class="grid grid-cols-2 gap-3 items-center">
+                <input type="number" x-model.number="algorithmRules.ecofoxPorTurno" class="input-field">
+                <div class="text-[10px] text-tertiary">Cuántos tienen que estar presentes al mismo tiempo, sin parar, desde que llega el primer avión hasta que sale el último. Es un puesto aparte: solo lo cubre la gente marcada como Ecofox en Personal.</div>
+              </div>
+            </div>
+            <p class="text-xs text-tertiary">Los turnos son de 10 horas: seguidas, o partidas en dos con 3 horas libres en medio. Esto no se puede cambiar.</p>
           </div>
         </div>
         <div class="card p-6">
           <h3 class="font-bold text-primary text-base mb-1">Personal por Aerolínea</h3>
-          <p class="text-xs text-secondary mb-5">Receptores por vuelo (la ola que entra antes). El resto de operativos sale del "base por tipo". Las aerolíneas nuevas aparecen solas al cargar el Excel.</p>
+          <p class="text-xs text-secondary mb-5">Cuántos receptores entran por vuelo — son los que llegan antes que el resto. Las aerolíneas nuevas aparecen solas al cargar el Excel.</p>
           <div class="space-y-2">
             <template x-for="[key,val] in Object.entries(airlineRules)" :key="key">
               <div class="p-3 rounded-xl" style="border:1px solid var(--border);background:var(--surface2)">
@@ -2113,12 +2573,29 @@
                   </div>
                 </div>
                 <template x-if="airlineAdvOpen[key]">
-                  <div class="mt-3 pt-3" style="border-top:1px dashed var(--border)">
-                    <div class="text-[10px] text-tertiary uppercase mb-2">Base de esta aerolínea — vacío = usa el global</div>
-                    <div class="grid grid-cols-3 gap-2">
-                      <div><label class="text-[10px] text-tertiary uppercase block mb-1">Despacho</label><input type="number" x-model.number="val.basePorTipo.DESPACHO" :placeholder="(algorithmRules.basePorTipo||{}).DESPACHO" class="input-field text-sm py-1.5"></div>
-                      <div><label class="text-[10px] text-tertiary uppercase block mb-1">Turn</label><input type="number" x-model.number="val.basePorTipo.TURN" :placeholder="(algorithmRules.basePorTipo||{}).TURN" class="input-field text-sm py-1.5"></div>
-                      <div><label class="text-[10px] text-tertiary uppercase block mb-1">Recepción</label><input type="number" x-model.number="val.basePorTipo.RECEPCION" :placeholder="(algorithmRules.basePorTipo||{}).RECEPCION" class="input-field text-sm py-1.5"></div>
+                  <div class="mt-3 pt-3 space-y-3" style="border-top:1px dashed var(--border)">
+                    <div class="text-[10px] text-tertiary">Todo lo de acá es <b>solo para esta aerolínea</b>. Si lo dejás vacío, usa el número general.</div>
+                    <div>
+                      <div class="text-[10px] text-tertiary uppercase mb-1">Cuánta gente de rampa, según el tipo de vuelo</div>
+                      <div class="grid grid-cols-3 gap-2">
+                        <div><label class="text-[10px] text-tertiary uppercase block mb-1">Despacho</label><input type="number" x-model.number="val.basePorTipo.DESPACHO" :placeholder="(algorithmRules.basePorTipo||{}).DESPACHO" class="input-field text-sm py-1.5"></div>
+                        <div><label class="text-[10px] text-tertiary uppercase block mb-1">Turn</label><input type="number" x-model.number="val.basePorTipo.TURN" :placeholder="(algorithmRules.basePorTipo||{}).TURN" class="input-field text-sm py-1.5"></div>
+                        <div><label class="text-[10px] text-tertiary uppercase block mb-1">Recepción</label><input type="number" x-model.number="val.basePorTipo.RECEPCION" :placeholder="(algorithmRules.basePorTipo||{}).RECEPCION" class="input-field text-sm py-1.5"></div>
+                      </div>
+                    </div>
+                    <div>
+                      <div class="text-[10px] text-tertiary uppercase mb-1">Cuántos por vuelo</div>
+                      <div class="grid grid-cols-2 gap-2">
+                        <div><label class="text-[10px] text-tertiary uppercase block mb-1">Crewchiefs</label><input type="number" x-model.number="val.encargadosPorVuelo" :placeholder="algorithmRules.encargadosPorVuelo" class="input-field text-sm py-1.5"></div>
+                        <div><label class="text-[10px] text-tertiary uppercase block mb-1">Operadores</label><input type="number" x-model.number="val.operadoresPorVuelo" :placeholder="algorithmRules.operadoresPorVuelo" class="input-field text-sm py-1.5"></div>
+                      </div>
+                    </div>
+                    <div>
+                      <div class="text-[10px] text-tertiary uppercase mb-1">Cuántos minutos antes entran</div>
+                      <div class="grid grid-cols-2 gap-2">
+                        <div><label class="text-[10px] text-tertiary uppercase block mb-1">Crewchief</label><input type="number" x-model.number="val.minAntesEncargado" :placeholder="algorithmRules.minAntesEncargado" class="input-field text-sm py-1.5"></div>
+                        <div><label class="text-[10px] text-tertiary uppercase block mb-1">Operador</label><input type="number" x-model.number="val.minAntesOperador" :placeholder="algorithmRules.minAntesOperador" class="input-field text-sm py-1.5"></div>
+                      </div>
                     </div>
                   </div>
                 </template>
@@ -2139,7 +2616,7 @@
             <span class="text-xs font-600 text-secondary">Modo:</span>
             <label class="flex items-center gap-1.5 cursor-pointer">
               <input type="radio" name="shiftMode" value="fixed10" x-model="shiftMode" class="cursor-pointer">
-              <span>Fijos 10h corridos/partidos</span>
+              <span>Turnos de 10 horas, seguidas o partidas</span>
             </label>
             <label class="flex items-center gap-1.5 cursor-not-allowed opacity-50" title="Próximamente — Fase 2">
               <input type="radio" name="shiftMode" value="variable812" disabled class="cursor-not-allowed">
@@ -2171,7 +2648,7 @@
               <span class="text-sm font-bold" style="color:#3DBF82" x-text="(calcTotal>0?Math.round(calcDia/calcTotal*100):0)+'%'"></span>
             </div>
             <div class="progress-bar"><div class="progress-fill" :style="`width:${calcTotal>0?Math.round(calcDia/calcTotal*100):0}%`"></div></div>
-            <div class="text-xs text-tertiary mt-2"><strong>No cierres la pestaña</strong> (si el navegador pregunta, elegí “Esperar”). Avanza de a un día — es normal que se trabe unos segundos entre cada uno.</div>
+            <div class="text-xs text-tertiary mt-2"><strong>La pestaña tiene que quedar abierta</strong> hasta que termine (si el navegador pregunta, conviene elegir “Esperar”). Avanza de a un día — es normal que se trabe unos segundos entre cada uno.</div>
           </div>
         </template>
       </div>
@@ -2223,7 +2700,7 @@
  
         <!-- Vista mes -->
         <div x-show="rosterViewMode==='month'" class="overflow-x-auto">
-          <div class="p-3 text-xs text-secondary">T = Trabajando · L = Libre. El Excel mensual incluye el horario completo.</div>
+          <div class="p-3 text-xs text-secondary">T = trabaja · L = libre. El Excel del mes trae el horario completo con las horas.</div>
           <table class="w-full text-xs border-collapse">
             <thead><tr style="border-bottom:1px solid var(--border)">
               <th class="sticky-col text-left p-2 text-[10px] font-600 text-secondary uppercase min-w-[150px]" style="border-right:1px solid var(--border)">Empleado</th>
@@ -2291,7 +2768,7 @@
  
       <div x-show="!scheduleGenerated" class="card p-10 text-center" style="border:2px dashed var(--border)">
         <div class="text-4xl mb-3">📅</div>
-        <p class="text-secondary text-sm">Presiona "Generar turnos" para calcular el horario.</p>
+        <p class="text-secondary text-sm">Falta generar los turnos para ver el horario.</p>
       </div>
     </div>
  
@@ -2305,7 +2782,7 @@
           </div>
           <button @click="exportOvertime()" class="btn-outline text-sm shrink-0">📥 Excel</button>
         </div>
-        <div x-show="!scheduleGenerated" class="alert-warning text-sm mt-4">Generá los turnos del mes para ver las horas extra.</div>
+        <div x-show="!scheduleGenerated" class="alert-warning text-sm mt-4">Falta generar los turnos del mes para ver las horas extra.</div>
         <template x-if="scheduleGenerated">
           <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
             <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
@@ -2356,12 +2833,24 @@
               </tr></thead>
               <tbody>
                 <template x-for="r in otRows" :key="r.name">
-                  <tr class="flight-row" style="border-bottom:1px solid var(--border)">
+                  <tr class="flight-row" style="border-bottom:1px solid var(--border);vertical-align:top">
                     <td class="p-3">
                       <div class="font-semibold text-primary text-xs" x-text="r.name"></div>
-                      <div x-show="otExpand===r.name" class="mt-2 space-y-1">
-                        <template x-for="s in r.slots" :key="s.day+'-'+s.label">
-                          <div class="text-[11px] text-secondary" x-text="'Día '+s.day+' · '+s.label+' ('+s.mins+' min)'"></div>
+                      <div x-show="otExpand===r.name" class="mt-2 space-y-2">
+                        <template x-for="(s,si) in r.slots" :key="s.day+'-'+si">
+                          <div class="pl-2" style="border-left:2px solid var(--border)">
+                            <div class="text-[11px] font-semibold text-secondary" x-text="'Día '+s.day+' · '+s.label+' ('+s.mins+' min)'"></div>
+                            <div x-show="s.extension" class="text-[10px] text-tertiary" x-text="s.end>s.start?('Se quedó de '+toHHMM(s.start)+' a '+toHHMM(s.end)):''"></div>
+                            <template x-for="v in vuelosDeSlot(s)" :key="v.key">
+                              <div class="text-[10px] text-tertiary mt-0.5">
+                                ✈️ <span class="font-semibold" style="color:var(--text-secondary)" x-text="v.vuelo"></span>
+                                <span x-text="' · '+v.tipo+' · '+v.horas"></span>
+                                <span x-show="v.prep" x-text="' · lo preparan desde '+v.prep"></span>
+                                <span x-show="v.otroDia" x-text="' (vuelo del día '+v.otroDia+')'"></span>
+                              </div>
+                            </template>
+                            <div x-show="!vuelosDeSlot(s).length" class="text-[10px] text-tertiary mt-0.5">No había aviones en tierra a esa hora.</div>
+                          </div>
                         </template>
                         <div x-show="!r.slots.length" class="text-[11px] text-tertiary">Sin detalle.</div>
                       </div>
@@ -2389,7 +2878,177 @@
             </table>
           </div>
           <div class="p-3 text-[11px] text-tertiary" style="border-top:1px solid var(--border)">
-            <b>Equidad:</b> "Alto" = 25% o más por encima del promedio · "Bajo" = 25% o menos. Sirve para repartir parejo el mes siguiente.
+            <b>Alto</b> = lleva 25% o más que el promedio. <b>Bajo</b> = 25% o menos. Sirve para repartir más parejo el mes que viene.
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ═══════ REPORTE ═══════ -->
+    <div x-show="currentTab==='reporte'" class="space-y-5">
+      <div class="card p-6">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold text-primary mb-1">Reporte del mes</h2>
+            <p class="text-sm text-secondary">Horas extra <b>usadas</b> día por día. Cada barra abre el detalle de ese día.</p>
+          </div>
+          <button @click="exportReporte()" class="btn-outline text-sm shrink-0" x-show="scheduleGenerated">📥 Excel</button>
+        </div>
+        <div x-show="!scheduleGenerated" class="alert-warning text-sm mt-4">Falta generar los turnos del mes para ver el reporte.</div>
+        <template x-if="scheduleGenerated">
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-3 mt-5">
+            <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+              <div class="text-2xl font-bold" style="color:#F59E0B" x-text="repTotalHoras+' h'"></div>
+              <div class="text-[10px] text-secondary uppercase" x-text="'Horas extra usadas en '+monthName"></div>
+            </div>
+            <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+              <div class="text-2xl font-bold text-primary" x-text="repDiasConExtras+' de '+daysInMonth"></div>
+              <div class="text-[10px] text-secondary uppercase">Días con horas extra</div>
+            </div>
+            <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+              <div class="text-2xl font-bold text-primary" x-text="repDiaPico.min?('Día '+repDiaPico.dia):'—'"></div>
+              <div class="text-[10px] text-secondary uppercase" x-text="repDiaPico.min?('El más cargado: '+repDiaPico.horas+' h'):'Sin horas extra'"></div>
+            </div>
+          </div>
+        </template>
+      </div>
+
+      <template x-if="scheduleGenerated">
+        <div class="card p-5" x-init="$watch('currentTab', v => { if(v==='reporte') repAnimarEntrada() })">
+          <div class="text-xs text-secondary mb-3">Horas extra por día. Incluye las asignadas a mano y las que se sumaron solas cuando un turno se alargó.</div>
+          <div class="rep-stage">
+            <div class="rep-chart">
+              <div class="overflow-x-auto pb-1">
+                <div style="min-width:520px">
+                  <div class="flex items-end gap-1 rep-alto" :style="'height:'+(repDia?360:230)+'px'">
+                    <template x-for="(r,i) in repDias" :key="'b'+r.dia">
+                      <div @click="repElegir(r.dia)" class="rep-col"
+                        :class="repDia===r.dia?'sel':(repDia?'dim':'')"
+                        :style="'flex-grow:'+(repDia===r.dia?2.6:1)"
+                        :title="'Día '+r.dia+': '+r.horas+' h'">
+                        <div class="rep-val" x-text="r.horas>0?r.horas:''"
+                          :style="(repEntrada?'transition-delay:'+(repDia?'0ms':(i*26+180)+'ms')+';opacity:'+((r.min>0&&(!repDia||repDia===r.dia))?1:0)
+                                             :'transition-duration:0ms;opacity:0')"></div>
+                        <div class="rep-slot">
+                          <div class="rep-bar"
+                            :style="(repEntrada?'transition-delay:'+(repDia?'0ms':(i*26)+'ms')+';height:'+(r.min>0?Math.max(r.pct,2):0)+'%'
+                                               :'transition-duration:0ms;height:0%')
+                                    +';min-height:'+(r.min>0?'3px':'0')+(r.min>0?'':';background:transparent')"></div>
+                        </div>
+                      </div>
+                    </template>
+                  </div>
+                  <div class="flex gap-1 mt-1" style="border-top:1px solid var(--border);padding-top:4px">
+                    <template x-for="r in repDias" :key="'x'+r.dia">
+                      <div @click="repElegir(r.dia)" class="rep-ax"
+                        :class="repDia===r.dia?'sel':(repDia?'dim':'')"
+                        :style="'flex-grow:'+(repDia===r.dia?2.6:1)" x-text="r.dia"></div>
+                    </template>
+                  </div>
+                </div>
+              </div>
+              <div x-show="!repDia" class="text-[11px] text-tertiary mt-3">Cada barra —o el número del día— abre el detalle.</div>
+            </div>
+
+            <div class="rep-panel" :class="repDetalleSel?'open':''">
+              <template x-if="repDetalleSel">
+                <div class="rep-panel-in">
+                  <div class="flex items-center justify-between gap-3 mb-4 rep-stag rep-s1">
+                    <h3 class="font-bold text-primary text-lg" x-text="monthName+' '+repDetalleSel.dia"></h3>
+                    <button @click="repDia=null" class="btn-outline text-xs shrink-0">Cerrar</button>
+                  </div>
+
+                  <div class="rep-stag rep-s2">
+                    <div class="text-4xl font-bold" style="color:#F59E0B;line-height:1" x-text="repAnim.horas.toFixed(1)+' h'"></div>
+                    <div class="text-xs text-secondary mt-1">Horas extra <b>usadas</b> ese día</div>
+
+                    <div class="grid grid-cols-2 gap-2 mt-4">
+                      <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+                        <div class="text-2xl font-bold text-primary" x-text="repAnim.trabajaron"></div>
+                        <div class="text-[10px] text-secondary mt-0.5 leading-snug">De la <b>operación</b> con turno<span x-show="repDetalleSel.supervisores>0" x-text="' (+'+repDetalleSel.supervisores+' supervisores)'"></span></div>
+                      </div>
+                      <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+                        <div class="text-2xl font-bold text-primary" x-text="repAnim.descansando"></div>
+                        <div class="text-[10px] text-secondary mt-0.5 leading-snug" x-text="'Descansaron · '+repDetalleSel.operativos+' operativos en total'"></div>
+                      </div>
+                      <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+                        <div class="text-2xl font-bold text-primary" x-text="'≈'+repDetalleSel.sinExtras"></div>
+                        <div class="text-[10px] text-secondary mt-0.5 leading-snug">Para <b>no usar horas extra</b>
+                          <span class="block text-tertiary" x-text="'('+repDetalleSel.trabajaron+' con turno + '+repDetalleSel.masParaNoPagar+' más)'"></span>
+                        </div>
+                      </div>
+                      <div class="rounded-xl p-3" style="background:var(--surface2);border:1px solid var(--border)">
+                        <div class="text-2xl font-bold" :style="repDetalleSel.faltaronPico>0?'color:#EF4444':'color:#3DBF82'" x-text="'≈'+repDetalleSel.sinHuecos"></div>
+                        <div class="text-[10px] text-secondary mt-0.5 leading-snug">Para <b>no dejar ningún hueco</b>
+                          <span class="block text-tertiary" x-show="repDetalleSel.faltaronPico>0" x-text="'('+repDetalleSel.trabajaron+' con turno + '+repDetalleSel.faltaronPico+' que faltaron a la vez)'"></span>
+                          <span class="block text-tertiary" x-show="!repDetalleSel.faltaronPico">Ese día se cubrió todo, no faltó nadie.</span>
+                        </div>
+                      </div>
+                    </div>
+                    <div x-show="repDetalleSel.deDescanso>0" class="text-[11px] mt-2 font-semibold" style="color:#B45309"
+                      x-text="'+'+repDetalleSel.deDescanso+(repDetalleSel.deDescanso===1?' vino':' vinieron')+' en su día libre a cubrir horas extra'"></div>
+                  </div>
+
+                  <template x-if="repDetalleSel.porRol.length">
+                    <div class="mt-5 rep-stag rep-s3">
+                      <div class="text-[10px] font-600 text-secondary uppercase mb-2">Horas extra por puesto</div>
+                      <div class="flex flex-wrap gap-2">
+                        <template x-for="p in repDetalleSel.porRol" :key="p.rol">
+                          <span class="extras-badge" x-text="p.rol+': '+p.horas+' h'"></span>
+                        </template>
+                      </div>
+                    </div>
+                  </template>
+
+                  <template x-if="repDetalleSel.vuelos.length">
+                    <div class="mt-5 rep-stag rep-s4">
+                      <div class="text-[10px] font-600 text-secondary uppercase mb-2" x-text="'Vuelos que pidieron las horas extra ('+repDetalleSel.vuelos.length+')'"></div>
+                      <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                          <thead><tr style="border-bottom:1px solid var(--border)">
+                            <th class="text-left p-1.5 text-[10px] font-600 text-secondary uppercase">Vuelo</th>
+                            <th class="text-left p-1.5 text-[10px] font-600 text-secondary uppercase">En tierra</th>
+                            <th class="text-right p-1.5 text-[10px] font-600 text-secondary uppercase">Pers.</th>
+                            <th class="text-right p-1.5 text-[10px] font-600 text-secondary uppercase">Horas</th>
+                          </tr></thead>
+                          <tbody>
+                            <template x-for="v in repDetalleSel.vuelos" :key="v.vuelo+v.cuando">
+                              <tr style="border-bottom:1px solid var(--border)">
+                                <td class="p-1.5 font-semibold text-primary text-[11px]">✈️ <span x-text="v.vuelo"></span>
+                                  <span class="text-tertiary font-normal" x-text="' '+v.tipo"></span></td>
+                                <td class="p-1.5 mono text-[11px] text-secondary" x-text="v.cuando"></td>
+                                <td class="p-1.5 text-right text-[11px] text-secondary" x-text="v.personas"></td>
+                                <td class="p-1.5 text-right font-bold text-[11px]" style="color:#B45309" x-text="v.horas+' h'"></td>
+                              </tr>
+                            </template>
+                          </tbody>
+                        </table>
+                      </div>
+                      <div x-show="repDetalleSel.sueltos>0" class="text-[11px] text-tertiary mt-2"
+                        x-text="repDetalleSel.sueltos+' h no se pudieron ligar a un vuelo (turnos que se estiraron en un rato sin aviones en tierra).'"></div>
+                    </div>
+                  </template>
+                  <div x-show="!repDetalleSel.vuelos.length" class="text-sm text-secondary mt-4">Ese día nadie hizo horas extra.</div>
+                </div>
+              </template>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template x-if="scheduleGenerated && repDetalleSel">
+        <div class="card p-5">
+          <div class="text-[11px] text-tertiary">
+            <b>Quién entra en los números:</b> solo personal de la <b>operación</b> (rampa, crewchiefs, operadores y Ecofox).
+            Los supervisores se cuentan aparte, y quienes vinieron en su día libre a cubrir horas extra también — así no se
+            cuentan dos veces con la gente que hace falta.
+            <span class="block mt-1"><b>Cómo se calculan los dos números:</b> "Para no usar horas extra" divide las horas extra del día en jornadas de 10 horas,
+            contando que cada persona de más cubre una jornada completa — en la práctica pueden hacer falta algunas más, porque las horas extra están
+            repartidas en distintos momentos. "Para no dejar ningún hueco" es la gente que faltó <b>al mismo tiempo</b> en el peor
+            momento del día, sumando rampa, crewchiefs y operadores.</span>
+            <span class="block mt-1"><b>Horas extra por vuelo:</b> cuando una misma persona cubre varios aviones a la vez, sus horas se
+            reparten entre ellos según cuánto rato coincide con cada uno; por eso la suma de la columna da el total del día.
+            "Personas" son las que hicieron horas extra con ese avión (alguien puede aparecer en más de un vuelo).</span>
           </div>
         </div>
       </template>
@@ -2399,31 +3058,31 @@
     <div x-show="currentTab==='horas_extras'" class="space-y-5">
       <div class="card p-6">
         <h2 class="text-xl font-bold text-primary mb-1">Asignación de horas</h2>
-        <p class="text-sm text-secondary">Vuelos con déficit de personal. Asigna manualmente quién cubre cada posición faltante.</p>
+        <p class="text-sm text-secondary">Momentos del mes donde falta gente. Acá se elige quién cubre cada uno.</p>
         <div x-show="scheduleGenerated" class="grid grid-cols-1 sm:grid-cols-2 gap-4 mt-5">
           <div class="rounded-xl p-4" style="background:var(--surface2);border:1px solid var(--border)">
             <div class="text-3xl font-bold" style="color:#F59E0B" x-text="'≈'+coverageMetrics.deficientHours+' h'"></div>
-            <div class="text-xs text-secondary mt-1">Horas extra totales del mes (para cubrir todo el déficit)</div>
+            <div class="text-xs text-secondary mt-1">Horas extra que harían falta para cubrir todo el mes</div>
           </div>
           <div class="rounded-xl p-4" style="background:var(--surface2);border:1px solid var(--border)">
             <div class="text-3xl font-bold" style="color:#F59E0B" x-text="'+'+(coverageMetrics.personalPico||0)+' a la vez'"></div>
             <div class="text-xs text-secondary mt-1">
-              Faltan en el <b>momento más cargado</b> del mes (dura minutos). <b>No es cuánta gente contratar</b> — para eso usá el comparador de abajo.
+              Es la gente que falta al mismo tiempo en el <b>peor momento</b> del mes, y dura solo unos minutos. <b>No es la gente que hay que contratar</b> — para eso está el comparador de abajo.
               <span x-show="(coverageMetrics.personalPico||0)>0" class="block mt-0.5" x-text="'('+(coverageMetrics.personalPicoOp||0)+' agentes de rampa · '+(coverageMetrics.personalPicoEnc||0)+' encargados · '+(coverageMetrics.personalPicoOpr||0)+' operadores)'"></span>
             </div>
           </div>
         </div>
         <p x-show="scheduleGenerated && overtimeAlerts.length>0" class="text-xs text-secondary mt-3">
-          De esas, ≈<span x-text="coverageMetrics.estructuralHoras||0"></span> h son estructurales (faltan cabezas, ni el mejor horario las cubre).
-          <span x-show="(coverageMetrics.limpiezaDeficit!==undefined)">Limpieza cubierta <span x-text="coverageMetrics.limpiezaPct"></span>%.</span>
+          De esas, unas <span x-text="coverageMetrics.estructuralHoras||0"></span> h no hay forma de evitarlas: no alcanza el personal disponible, por más que se acomoden los turnos.
+          <span x-show="(coverageMetrics.limpiezaDeficit!==undefined)">Se alcanza a limpiar el <span x-text="coverageMetrics.limpiezaPct"></span>% de los aviones.</span>
         </p>
         <div x-show="scheduleGenerated && extrasProgress.totalH>0" class="mt-4">
           <div class="flex justify-between items-center mb-1.5 gap-2 flex-wrap">
-            <span class="text-xs font-600 text-secondary uppercase">Avance: extras ya cubiertas</span>
+            <span class="text-xs font-600 text-secondary uppercase">Cuánto está cubierto</span>
             <span class="text-sm font-bold" style="color:#3DBF82" x-text="'cubierto ≈'+extrasProgress.coveredH+' de ≈'+extrasProgress.totalH+' h ('+extrasProgress.pct+'%)'"></span>
           </div>
           <div class="progress-bar"><div class="progress-fill" :style="`width:${extrasProgress.pct}%`"></div></div>
-          <div class="text-[11px] text-tertiary mt-1">Sube a medida que asignás gente a las franjas (cuenta también las cubiertas en parte).</div>
+          <div class="text-[11px] text-tertiary mt-1">Sube conforme se va asignando gente. Los huecos cubiertos a medias también suman su parte.</div>
         </div>
       </div>
 
@@ -2446,11 +3105,11 @@
               </div>
               <div x-show="expandedSummary===row.name" class="pb-3 pl-1 text-xs space-y-2">
                 <div x-show="row.slots.some(s=>!s.extension)">
-                  <div class="font-semibold text-secondary mb-0.5">Asignadas por vos:</div>
+                  <div class="font-semibold text-secondary mb-0.5">Asignadas a mano:</div>
                   <div class="text-secondary" x-text="row.slots.filter(s=>!s.extension).map(s=>'Día '+s.day+' '+s.label).join(' · ')"></div>
                 </div>
                 <div x-show="row.slots.some(s=>s.extension)">
-                  <div class="font-semibold text-secondary mb-0.5">Extensiones automáticas del turno (el motor lo estiró para tapar huecos):</div>
+                  <div class="font-semibold text-secondary mb-0.5">Turnos que se alargaron para cubrir y no abandonar a medio vuelo:</div>
                   <div class="text-secondary" x-text="row.slots.filter(s=>s.extension).map(s=>'Día '+s.day+' (+'+s.mins+'min)').join(' · ')"></div>
                 </div>
               </div>
@@ -2462,11 +3121,11 @@
       <!-- Comparador: contratar vs horas extras -->
       <div x-show="scheduleGenerated" class="card p-5">
         <h3 class="font-bold text-primary mb-1">Comparador: ¿contratar o pagar horas extras?</h3>
-        <p class="text-xs text-secondary mb-3">La fila <b>“Nadie”</b> usa el déficit real de <span x-text="monthName"></span>. Las filas de contratación (≈) son estimación: la curva medida en junio, escalada a tu mes. Meté tus números y mirá qué conviene.</p>
+        <p class="text-xs text-secondary mb-3">La fila <b>“Nadie”</b> usa las horas extra reales de <span x-text="monthName"></span>. Las filas de contratación (≈) son una estimación: se calculan a partir de lo que se midió en junio, ajustado a este mes. Con los números de abajo la tabla muestra qué conviene.</p>
         <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
           <div><label class="text-xs text-secondary block mb-1">Sueldo mensual (Q)</label><input type="number" x-model.number="compSalary" class="input-field"></div>
           <div><label class="text-xs text-secondary block mb-1">Hora extra (Q)</label><input type="number" x-model.number="compOT" class="input-field"></div>
-          <div><label class="text-xs text-secondary block mb-1">Tope humano (h extra / persona / mes)</label><input type="number" x-model.number="compCap" class="input-field"></div>
+          <div><label class="text-xs text-secondary block mb-1">Máximo de horas extra por persona al mes</label><input type="number" x-model.number="compCap" class="input-field"></div>
         </div>
         <template x-if="comparatorBest()">
           <div class="alert-success text-sm mb-3">
@@ -2499,11 +3158,11 @@
             </tbody>
           </table>
         </div>
-        <p class="text-xs text-secondary mt-2">≈ = cobertura estimada (curva de junio escalada). ⚠ = supera tu tope humano de horas extra por persona. La fila verde es la recomendada.</p>
+        <p class="text-xs text-secondary mt-2">≈ quiere decir que es un estimado. ⚠ marca las opciones donde alguien pasaría el máximo de horas extra. La fila verde es la que más conviene.</p>
       </div>
 
       <div x-show="!scheduleGenerated" class="card p-8 text-center" style="border:2px dashed var(--border)">
-        <p class="text-secondary text-sm">Genera los turnos primero para ver las horas extras necesarias.</p>
+        <p class="text-secondary text-sm">Falta generar los turnos para ver las horas extra necesarias.</p>
       </div>
  
       <div x-show="scheduleGenerated && overtimeAlerts.length===0" class="alert-success">
@@ -2572,7 +3231,8 @@
         <div><label class="text-xs font-600 text-secondary block mb-1.5">ETD</label><input type="time" x-model="editingFlight.etd" class="input-field"></div>
       </div>
       <div><label class="text-xs font-600 text-secondary block mb-1.5">Días (separados por coma)</label>
-        <input type="text" :value="editingFlight.days.join(', ')" @input="editingFlight.days=$event.target.value.split(',').map(n=>parseInt(n.trim())).filter(n=>!isNaN(n))" class="input-field" placeholder="1, 2, 3, ...">
+        <input type="text" x-model="flightDaysText" class="input-field" placeholder="1, 2, 3, ...">
+        <div class="text-[10px] text-tertiary mt-1">Separá los días con coma. Ej: <b>1, 5, 12, 20</b></div>
       </div>
     </div>
     <div class="flex justify-end gap-2 mt-6">
@@ -2592,7 +3252,8 @@
         <select x-model="editingStaff.role" class="input-field">
           <option value="Operativo">Agente de Rampa</option>
           <option value="Operador">Operador</option>
-          <option value="Encargado">Encargado de Vuelo</option>
+          <option value="Encargado">Crewchief</option>
+          <option value="Ecofox">Ecofox (encargado de faja)</option>
           <option value="Supervisor">Supervisor</option>
         </select>
       </div>
@@ -2608,7 +3269,7 @@
 <div x-show="staffImportModalOpen" class="modal-overlay" style="display:none">
   <div class="modal-box" @click.away="staffImportModalOpen=false;staffImport=null">
     <h3 class="font-bold text-primary text-lg mb-1">Confirmar cambio de personal</h3>
-    <p class="text-xs text-secondary mb-4">La lista quedará exactamente como el Excel. Revisá antes de aplicar.</p>
+    <p class="text-xs text-secondary mb-4">La lista quedará exactamente como el Excel. Conviene revisar antes de aplicar.</p>
     <template x-if="staffImport">
       <div class="space-y-3">
         <div class="grid grid-cols-3 gap-2 text-center">
@@ -2683,7 +3344,7 @@
       </div>
     </template>
     <div>
-      <label class="text-xs font-600 text-secondary block mb-2">Selecciona empleado(s) — ⭐ pegado al hueco · 🛌 de descanso ese día (preguntarle)</label>
+      <label class="text-xs font-600 text-secondary block mb-2">⭐ = ya está trabajando cerca de esa hora · 🛌 = personal de descanso.</label>
       <div class="space-y-1 max-h-64 overflow-y-auto pr-1">
         <template x-for="emp in extrasCandidates" :key="emp.id">
           <div @click="toggleExtraEmp(emp.name)" class="flex items-center gap-3 p-2 rounded-lg transition"
@@ -2695,7 +3356,7 @@
             <div class="flex-1 min-w-0">
               <div class="text-sm font-medium text-primary truncate" x-text="emp.name"></div>
               <div x-show="extraSugg[emp.name]" class="text-[10px] mt-0.5" style="color:#16A34A" x-text="extraSugg[emp.name]?('⭐ '+extraSugg[emp.name].note):''"></div>
-              <div x-show="selectedExtraSlot && getRosterStatus(emp.id,selectedExtraSlot.day).isDescanso" class="text-[10px] mt-0.5" style="color:#6B7280">🛌 de descanso — preguntarle si quiere la extra</div>
+              <div x-show="selectedExtraSlot && getRosterStatus(emp.id,selectedExtraSlot.day).isDescanso" class="text-[10px] mt-0.5" style="color:#6B7280">🛌 personal de descanso</div>
               <div x-show="extraConflicts[emp.id]" class="text-[10px] mt-0.5 font-semibold" style="color:#DC2626" x-text="'✗ '+extraConflicts[emp.id]+' (no se puede)'"></div>
             </div>
             <span :class="getRoleColor(emp.role)" x-text="roleLabel(emp.role)"></span>

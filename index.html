@@ -1172,6 +1172,23 @@
         const restDays={};
         [[rampas,'operativo'],[encargados,'encargado'],[operadores,'operador'],[ecofox,'ecofox']].forEach(([emps,pl])=>{const r=computeRestDays(emps,pl);for(const id in r)restDays[id]=r[id];});
         const diasTrabajados={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>diasTrabajados[e.id]=0);
+        // ── REPARTO PAREJO DE LO INCÓMODO ──
+        // Los DÍAS ya se reparten por diasTrabajados. Esto reparte QUÉ TURNO le toca a cada
+        // quien, para que la noche no le caiga siempre a los mismos. NO cambia qué turnos se
+        // trabajan (la cobertura no se mueve): solo cambia quién ocupa cada uno.
+        // Se llevan las tres cuentas por separado; si no, la noche se come a las otras dos.
+        const carga={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>carga[e.id]={n:0,m:0,p:0});
+        const PESO={n:3,m:2,p:1};                    // cuánto pesa cada incomodidad
+        const tipoDe=(blks)=>{
+          const ini=Math.min(...blks.map(b=>b[0])), fin=Math.max(...blks.map(b=>b[1]));
+          return {n:fin>1380?1:0, m:ini<300?1:0, p:blks.length>1?1:0};
+        };
+        const pesoDe=(t)=>t.n*PESO.n+t.m*PESO.m+t.p*PESO.p;
+        // Qué tan desparejas quedan dos personas si cada una carga lo suyo.
+        const desbalance=(a,b,ta,tb)=>
+          PESO.n*Math.abs((carga[a].n+ta.n)-(carga[b].n+tb.n))
+         +PESO.m*Math.abs((carga[a].m+ta.m)-(carga[b].m+tb.m))
+         +PESO.p*Math.abs((carga[a].p+ta.p)-(carga[b].p+tb.p));
         const allDeficits=[]; let demMin=0,covMin=0,gapMin=0,structMin=0,limpDemMin=0,limpGapMin=0;
         const picoStruct={operativo:0,encargado:0,operador:0,ecofox:0}; // máx personas que faltan disponibles en un mismo instante, por pool
         const poolMeta={operativo:{rol:'Operativo',label:'Operativos'},encargado:{rol:'Encargado de Vuelo',label:'Encargados'},operador:{rol:'Operador',label:'Operadores'},ecofox:{rol:'Ecofox',label:'Ecofox'}};
@@ -1235,9 +1252,16 @@
               pisoDuro[emp.id]=fin?Math.max(0,fin-1440+PISO_DESCANSO):0;   // nunca por debajo del límite físico
             });
             const inicioDe=(blks)=>Math.min(...blks.map(b=>b[0]));
-            // Asignación base (la de siempre: turno i → persona i por menos días trabajados)
+            // QUIÉN trabaja hoy: los que menos días llevan (igual que siempre).
+            // QUÉ turno le toca: el más incómodo va a quien menos incomodidad ha cargado.
             const turnoDe={};
-            sorted.forEach((emp,i)=>{ if(i<workers.length)turnoDe[emp.id]=i; });
+            const trabajanHoy=sorted.slice(0,workers.length);
+            const ordenTurnos=workers.map((w,i)=>({i,pw:pesoDe(tipoDe(w))}))
+              .sort((x,y)=>y.pw-x.pw||x.i-y.i);
+            const deuda=(id)=>carga[id].n*PESO.n+carga[id].m*PESO.m+carga[id].p*PESO.p;
+            const ordenGente=trabajanHoy.slice()
+              .sort((x,y)=>deuda(x.id)-deuda(y.id)||diasTrabajados[x.id]-diasTrabajados[y.id]);
+            ordenTurnos.forEach((t,k)=>{ if(ordenGente[k])turnoDe[ordenGente[k].id]=t.i; });
             // Corregir choques. Se intenta primero con el descanso completo; si no hay con quién,
             // se repite exigiendo solo el límite físico. Si ni así, la persona NO trabaja ese turno
             // (jamás se deja un turno imposible).
@@ -1264,6 +1288,28 @@
             reacomodar(libreDesde);   // primero con el descanso deseado
             reacomodar(pisoDuro);     // si no se puede, con el mínimo; ahí ya no se cede más
 
+            // ── EMPAREJAR LA CARGA ──
+            // Reacomodar resuelve choques de descanso sin mirar la equidad, así que deshace parte
+            // del reparto. Acá se intercambian turnos entre dos personas SOLO si eso acerca sus
+            // cargas y las dos siguen respetando el descanso mínimo. Va al final justamente para
+            // no poder romper ningún descanso.
+            {
+              const ids=Object.keys(turnoDe);
+              for(let vuelta=0;vuelta<6;vuelta++){
+                let mejoro=false;
+                for(let x=0;x<ids.length;x++)for(let y=x+1;y<ids.length;y++){
+                  const A=ids[x], B=ids[y], wA=turnoDe[A], wB=turnoDe[B];
+                  if(wA===undefined||wB===undefined||wA===wB)continue;
+                  const tA=tipoDe(workers[wA]), tB=tipoDe(workers[wB]);
+                  if(tA.n===tB.n&&tA.m===tB.m&&tA.p===tB.p)continue;
+                  if(desbalance(A,B,tB,tA)>=desbalance(A,B,tA,tB))continue;
+                  if(pisoDuro[A]>inicioDe(workers[wB])||pisoDuro[B]>inicioDe(workers[wA]))continue;
+                  turnoDe[A]=wB; turnoDe[B]=wA; mejoro=true;
+                }
+                if(!mejoro)break;
+              }
+            }
+
             const sobrantes=[];
             sorted.forEach((emp)=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
@@ -1273,6 +1319,7 @@
                 const isSplit=blks.length>1;
                 const totalMin=blks.reduce((a,seg)=>a+(seg[1]-seg[0]),0);
                 const blockStr=blks.map(seg=>`${toHHMM(seg[0])} - ${toHHMM(seg[1])}`).join(' / ');
+                { const t=tipoDe(blks); carga[emp.id].n+=t.n; carga[emp.id].m+=t.m; carga[emp.id].p+=t.p; }
                 // La hora de comida la define el encargado de turno en el día,
                 // según la operación real (vuelos atrasados, huecos, etc.).
                 const meal=(!isSplit&&totalMin>=300)?'Define encargado':'-';

@@ -294,7 +294,7 @@
       darkMode:false, currentTab:'inicio', mobileMenuOpen:false,
       flightFilter:'', flightDayFilter:'', flightSort:'', staffFilter:'', rosterViewMode:'day',
       selectedEmp:null,
-      editingFlight:null, editingStaff:null, disableModalOpen:false,
+      editingFlight:null, editingStaff:null, disableModalOpen:false, aerolineaNueva:false,
       disableReason:'', selectedStaffToDisable:null,
       extrasModalOpen:false, selectedExtraSlot:null, extrasAssignEmps:[], overtimeSummary:[], extraSugg:{}, extraConflicts:{}, extrasCandidates:[],
       expandedSummary:null, liveStaffOpen:false, compSalary:4000, compOT:30, compCap:40,
@@ -666,6 +666,53 @@
 
       // Toda aerolínea presente en los vuelos debe tener su regla editable en el panel.
       // Las nuevas entran con el default (2 receptores, o 4 si es exactamente "AA").
+      // ── AEROLÍNEAS: UN SOLO NOMBRE POR AEROLÍNEA ──
+      // El motor busca las reglas por el nombre EXACTO (`RULES[f.airline]`), así que "JETBLU",
+      // "JETBLUE" y "JetBlue" son tres aerolíneas distintas para él. Todo lo que escriba un
+      // nombre de aerolínea (Excel o carga a mano) tiene que pasar por `claveAerolinea`.
+      normalizarAerolinea(s){
+        return String(s==null?'':s).normalize('NFD')
+          .replace(/[\u0300-\u036f]/g,'')                        // fuera acentos
+          .replace(/[^A-Za-z0-9]+/g,' ').replace(/\s+/g,' ').trim().toUpperCase();
+      },
+      // Si ya existe una que solo difiere en acentos, espacios o mayúsculas, se reusa ESA clave.
+      claveAerolinea(nombre){
+        const n=this.normalizarAerolinea(nombre);
+        if(!n)return '';
+        const ya=Object.keys(this.airlineRules||{}).find(k=>this.normalizarAerolinea(k)===n);
+        return ya||n;
+      },
+      // Nombres PARECIDOS pero no iguales (JETBLU vs JETBLUE). NO se unen solos a propósito:
+      // dos aerolíneas distintas pueden llamarse parecido y unirlas rompería los datos en silencio.
+      get aerolineasParecidas(){
+        const ks=Object.keys(this.airlineRules||{});
+        const dist=(a,b)=>{
+          const m=a.length,n=b.length; if(Math.abs(m-n)>3)return 9;
+          let prev=Array.from({length:n+1},(_,j)=>j);
+          for(let i=1;i<=m;i++){ const cur=[i];
+            for(let j=1;j<=n;j++)cur[j]=Math.min(prev[j]+1,cur[j-1]+1,prev[j-1]+(a[i-1]===b[j-1]?0:1));
+            prev=cur; }
+          return prev[n];
+        };
+        const pares=[];
+        for(let i=0;i<ks.length;i++)for(let j=i+1;j<ks.length;j++){
+          const a=this.normalizarAerolinea(ks[i]), b=this.normalizarAerolinea(ks[j]);
+          if(a.length<4||b.length<4)continue;
+          if(a.startsWith(b)||b.startsWith(a)||dist(a,b)<=2)pares.push({a:ks[i],b:ks[j]});
+        }
+        return pares;
+      },
+      vuelosDeAerolinea(k){ return (this.flights||[]).filter(f=>f.airline===k).length; },
+      // Solo se puede quitar la que NO tiene vuelos. No se hace solo: ahora que las reglas son
+      // globales, una aerolínea puede no tener vuelos este mes pero sí en otro.
+      quitarAerolinea(k){
+        if(this.vuelosDeAerolinea(k)>0)return;
+        if(!confirm(`¿Quitar ${k} de las reglas?\n\nNo tiene ningún vuelo cargado. Si más adelante aparece en un Excel, se vuelve a agregar sola.`))return;
+        delete this.airlineRules[k];
+        delete this.airlineAdvOpen[k];
+        this.reglasTocadas();
+      },
+
       syncAirlineRules(){
         let nuevas=0;
         (this.flights||[]).forEach(f=>{
@@ -1876,14 +1923,17 @@
       // ── CRUD VUELOS ──
       // Los días se escriben en un campo de TEXTO libre (flightDaysText) y recién se convierten a
       // números al guardar. Antes se convertían en cada tecla y eso borraba la coma al escribirla.
-      addNewFlight(){this.editingFlight={id:'new',airline:'AA',flightNo:'',type:'TURN',eta:'12:00',etd:'13:00',days:[1],active:true};this.flightDaysText='1';},
-      editFlight(f){this.editingFlight=JSON.parse(JSON.stringify(f));this.flightDaysText=(f.days||[]).join(', ');},
+      addNewFlight(){const k=Object.keys(this.airlineRules||{})[0]||'AA';this.editingFlight={id:'new',airline:k,flightNo:'',type:'TURN',eta:'12:00',etd:'13:00',days:[1],active:true};this.flightDaysText='1';this.aerolineaNueva=false;},
+      editFlight(f){this.editingFlight=JSON.parse(JSON.stringify(f));this.flightDaysText=(f.days||[]).join(', ');this.aerolineaNueva=!this.airlineRules[f.airline];},
       parseFlightDays(){
         const dias=[...new Set(String(this.flightDaysText||'').split(/[,;\s]+/)
           .map(n=>parseInt(n,10)).filter(n=>!isNaN(n)&&n>=1&&n<=31))].sort((a,b)=>a-b);
         return dias;
       },
       saveFlight(){
+        // Mismo tratamiento que el Excel: si la aerolínea ya existe con otro formato, se reusa.
+        this.editingFlight.airline=this.claveAerolinea(this.editingFlight.airline);
+        if(!this.editingFlight.airline){ alert('Falta elegir la aerolínea.'); return; }
         this.editingFlight.days=this.parseFlightDays();
         if(this.editingFlight.id==='new'){this.editingFlight.id='F'+Date.now();this.flights.unshift(this.editingFlight);}
         else{const i=this.flights.findIndex(f=>f.id===this.editingFlight.id);if(i>-1)this.flights[i]=this.editingFlight;}
@@ -2017,7 +2067,8 @@
           for(let i=2;i<rows.length;i++){
             const row=rows[i];
             if(!row||!row[0])continue;
-            const airline=String(row[0]).trim().toUpperCase();
+            // Reusa la clave ya registrada si solo cambia en acentos, espacios o mayúsculas.
+            const airline=this.claveAerolinea(row[0]);
             if(!airline||airline==='AEROLINEA'||MESES.includes(airline))continue;
             // Nuevo formato: col0=Aerolínea, col1=Tipo, col2=ETA, col3=ETD, col4+=días
             const tipo=String(row[1]||'TURN').trim().toUpperCase();
@@ -2608,15 +2659,33 @@
         <div class="card p-6">
           <h3 class="font-bold text-primary text-base mb-1">Personal por Aerolínea</h3>
           <p class="text-xs text-secondary mb-5">Cuántos receptores entran por vuelo — son los que llegan antes que el resto. Las aerolíneas nuevas aparecen solas al cargar el Excel.</p>
+          <template x-if="aerolineasParecidas.length">
+            <div class="alert-warning text-xs mb-4">
+              <b>Hay aerolíneas con nombres parecidos.</b> El horario se arma buscando el nombre exacto,
+              así que si son la misma, los vuelos de una no usan las reglas de la otra.
+              <template x-for="p in aerolineasParecidas" :key="p.a+'|'+p.b">
+                <div class="mt-1.5 mono" x-text="'· '+p.a+' ('+vuelosDeAerolinea(p.a)+' vuelos)   vs   '+p.b+' ('+vuelosDeAerolinea(p.b)+' vuelos)'"></div>
+              </template>
+              <div class="mt-2">La que tiene 0 vuelos se puede quitar con la ✕. Si las dos tienen vuelos, hay que corregir el nombre en la pestaña Vuelos.</div>
+            </div>
+          </template>
           <div class="space-y-2">
             <template x-for="[key,val] in Object.entries(airlineRules)" :key="key">
               <div class="p-3 rounded-xl" style="border:1px solid var(--border);background:var(--surface2)">
                 <div class="flex items-center justify-between gap-3">
-                  <span class="font-semibold text-primary text-sm truncate" x-text="val.name||key"></span>
+                  <span class="font-semibold text-primary text-sm truncate">
+                    <span x-text="val.name||key"></span>
+                    <span class="block text-[10px] font-normal"
+                      :style="vuelosDeAerolinea(key)?'color:var(--text-tertiary)':'color:#B45309'"
+                      x-text="vuelosDeAerolinea(key)?(vuelosDeAerolinea(key)+' vuelos cargados'):'sin vuelos cargados'"></span>
+                  </span>
                   <div class="flex items-center gap-2 shrink-0">
                     <label class="text-[10px] font-600 text-secondary uppercase">Receptores</label>
                     <input type="number" x-model.number="val.receptores" class="input-field text-sm py-1.5" style="width:84px">
                     <button @click="toggleAirlineAdv(key)" class="text-[10px] font-600 uppercase px-2 py-1 rounded-lg" style="border:1px solid var(--border);color:var(--text-secondary)" x-text="airlineAdvOpen[key]?'Avanzado ▴':'Avanzado ▾'"></button>
+                    <button x-show="!vuelosDeAerolinea(key)" @click="quitarAerolinea(key)"
+                      class="text-sm px-2 py-1 rounded-lg" style="border:1px solid var(--border);color:#EF4444"
+                      title="Quitar esta aerolínea (no tiene vuelos cargados)">✕</button>
                   </div>
                 </div>
                 <template x-if="airlineAdvOpen[key]">
@@ -3265,9 +3334,33 @@
 <div x-show="editingFlight" class="modal-overlay" style="display:none">
   <div class="modal-box" @click.away="editingFlight=null">
     <h3 class="font-bold text-primary text-lg mb-5" x-text="editingFlight?.id==='new'?'Nuevo vuelo':'Editar vuelo'"></h3>
-    <div class="space-y-3" x-if="editingFlight">
+    <!-- template x-if (no div): así el <select> se crea recién al abrir la ventana, con las
+         opciones ya puestas. Con x-if en un div, Alpine lo ignora y el select mostraba la
+         primera opción en vez de la aerolínea real. -->
+    <template x-if="editingFlight">
+    <div class="space-y-3">
       <div class="grid grid-cols-2 gap-3">
-        <div><label class="text-xs font-600 text-secondary block mb-1.5">Aerolínea</label><input type="text" x-model="editingFlight.airline" class="input-field"></div>
+        <div>
+          <label class="text-xs font-600 text-secondary block mb-1.5">Aerolínea</label>
+          <!-- x-init + $nextTick: las opciones las pinta el x-for DESPUÉS de que x-model fija el
+               valor, así que sin esto el desplegable mostraba la última opción en vez de la
+               aerolínea del vuelo. Es el mismo problema documentado del selector de mes. -->
+          <select x-show="!aerolineaNueva" x-model="editingFlight.airline"
+            x-init="$nextTick(()=>{ if(editingFlight) $el.value=editingFlight.airline })"
+            @change="if(editingFlight.airline==='__otra__'){aerolineaNueva=true;editingFlight.airline='';}"
+            class="input-field">
+            <template x-for="k in Object.keys(airlineRules)" :key="k">
+              <option :value="k" x-text="(airlineRules[k]&&airlineRules[k].name)||k"></option>
+            </template>
+            <option value="__otra__">➕ Otra aerolínea…</option>
+          </select>
+          <div x-show="aerolineaNueva" class="flex gap-2">
+            <input type="text" x-model="editingFlight.airline" placeholder="Nombre de la aerolínea" class="input-field">
+            <button type="button" @click="aerolineaNueva=false;editingFlight.airline=Object.keys(airlineRules)[0]||''"
+              class="btn-outline text-xs shrink-0">Volver</button>
+          </div>
+          <div x-show="aerolineaNueva" class="text-[10px] text-tertiary mt-1">Se guarda en mayúsculas y sin acentos, igual que las del Excel.</div>
+        </div>
         <div><label class="text-xs font-600 text-secondary block mb-1.5">Nº vuelo</label><input type="text" x-model="editingFlight.flightNo" class="input-field"></div>
       </div>
       <div><label class="text-xs font-600 text-secondary block mb-1.5">Tipo</label>
@@ -3282,6 +3375,7 @@
         <div class="text-[10px] text-tertiary mt-1">Separá los días con coma. Ej: <b>1, 5, 12, 20</b></div>
       </div>
     </div>
+    </template>
     <div class="flex justify-end gap-2 mt-6">
       <button @click="editingFlight=null" class="btn-outline">Cancelar</button>
       <button @click="saveFlight()" class="btn-primary">Guardar</button>

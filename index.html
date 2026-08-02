@@ -317,6 +317,7 @@
         encargadosPorVuelo:1, operadoresPorVuelo:1,
         basePorTipo:{DESPACHO:7,TURN:10,RECEPCION:8},
         minAntesReceptores:120, minAntesBase:15, minAntesEncOp:30, minAntesEncargado:30, minAntesOperador:30, ecofoxPorTurno:3,
+        descansoDeseadoH:8, descansoMinimoH:6,   // horas entre el turno de anoche y el de hoy
         minutosAntesVuelo:15, maxHorasDiarias:10,
         minHorasBloque:2, minDescansoPartido:180,
         minutosComida:45, umbralComida:300, umbralAgrupar:180,
@@ -496,6 +497,8 @@
         if(a.minAntesEncargado==null)a.minAntesEncargado=a.minAntesEncOp;   // reglas viejas: heredan el valor compartido
         if(a.minAntesOperador==null)a.minAntesOperador=a.minAntesEncOp;
         if(a.ecofoxPorTurno==null)a.ecofoxPorTurno=3;
+        if(a.descansoDeseadoH==null)a.descansoDeseadoH=8;   // reglas guardadas antes de que existieran
+        if(a.descansoMinimoH==null)a.descansoMinimoH=6;
       },
       async loadReglas(){
         try{
@@ -802,7 +805,16 @@
         // ▼ Descanso MÍNIMO entre el turno de anoche y el de hoy (minutos). Evita que alguien que
         //   salió de madrugada entre de nuevo esa misma mañana (jornadas de 16-18h seguidas, y hasta
         //   turnos que se pisaban entre sí). 0 = solo impedir que se solapen; 480 = 8h de descanso.
-        const DESCANSO_ENTRE_TURNOS=480;
+        // ── Descanso entre el turno de anoche y el de hoy (los dos salen del panel Reglas, en horas) ──
+        //  · DESCANSO_ENTRE_TURNOS = la META. Si la operación no da, cede.
+        //  · PISO_DESCANSO = el MÍNIMO, no se cruza nunca. Si nadie lo respeta, el turno queda SIN
+        //    CUBRIR (pasa a horas extra) en vez de mandarle a alguien con 15 min de descanso.
+        //    Medido con agosto real: 6 h no cuesta nada y saca las jornadas de 20 h; 8 h cuesta
+        //    ~124 h de déficit y 25 turnos que nadie puede tomar.
+        const _hAmin=(v,def)=>{const n=Number(v);return (isFinite(n)&&n>=0)?Math.round(n*60):def;};
+        const PISO_DESCANSO=_hAmin((this.algorithmRules||{}).descansoMinimoH,360);
+        // Si el mínimo quedara por encima de la meta, manda el mínimo (si no, la meta sería más laxa).
+        const DESCANSO_ENTRE_TURNOS=Math.max(_hAmin((this.algorithmRules||{}).descansoDeseadoH,480),PISO_DESCANSO);
 
         const toM=(t)=>{if(!t)return 0;const p=String(t).split(':');return(parseInt(p[0])||0)*60+(parseInt(p[1])||0);};
         const toHHMM=(m)=>{const v=((m%1440)+1440)%1440;return`${String(Math.floor(v/60)).padStart(2,'0')}:${String(v%60).padStart(2,'0')}`;};
@@ -1162,7 +1174,7 @@
             //    madrugada. Es FÍSICO: jamás se puede violar (estaría en dos lugares a la vez).
             //  · libreDesde   = ocupadoHasta + DESCANSO_ENTRE_TURNOS. Es la META de descanso;
             //    si la operación no da para respetarla, se cede — pero nunca el límite físico.
-            const ocupadoHasta={}, libreDesde={};
+            const ocupadoHasta={}, libreDesde={}, pisoDuro={};
             sorted.forEach(emp=>{
               const prev=day>1?(this.currentRoster[emp.id]||{})[day-1]:null;
               let fin=0; // fin del turno de anoche, en el eje de AYER (>1440 = cruzó medianoche)
@@ -1173,6 +1185,7 @@
               }
               ocupadoHasta[emp.id]=fin>1440?fin-1440:0;
               libreDesde[emp.id]=fin?Math.max(0,fin-1440+DESCANSO_ENTRE_TURNOS):0;
+              pisoDuro[emp.id]=fin?Math.max(0,fin-1440+PISO_DESCANSO):0;   // nunca por debajo del límite físico
             });
             const inicioDe=(blks)=>Math.min(...blks.map(b=>b[0]));
             // Asignación base (la de siempre: turno i → persona i por menos días trabajados)
@@ -1198,11 +1211,11 @@
                     turnoDe[libre.id]=wi; delete turnoDe[emp.id]; return;
                   }
                 }
-                if(tope===ocupadoHasta)delete turnoDe[emp.id];   // 3) imposible: nadie cubre ese turno
+                if(tope===pisoDuro)delete turnoDe[emp.id];   // 3) imposible respetando el mínimo: ese turno queda sin cubrir
               });
             };
-            reacomodar(libreDesde);
-            reacomodar(ocupadoHasta);
+            reacomodar(libreDesde);   // primero con el descanso deseado
+            reacomodar(pisoDuro);     // si no se puede, con el mínimo; ahí ya no se cede más
 
             const sobrantes=[];
             sorted.forEach((emp)=>{
@@ -1227,9 +1240,16 @@
               }
             });
  
+            // ⚠️ Cobertura REAL, no la planeada. `coverage` viene de assignMixed, que reparte los
+            // turnos ANTES de descartar los que nadie puede tomar por el descanso mínimo. Usarla
+            // daba un % optimista y franjas de déficit más cortas que la realidad.
+            const coverageReal={};
+            Object.values(turnoDe).forEach(wi=>{
+              (workers[wi]||[]).forEach(seg=>{ for(let t=seg[0];t<seg[1];t+=STEP)coverageReal[t]=(coverageReal[t]||0)+1; });
+            });
             const meta=poolMeta[pool]; let blk=null;
             Object.keys(demand).map(Number).sort((a,b)=>a-b).forEach(t=>{
-              const dd=demand[t]||0,cc=coverage[t]||0; demMin+=dd; covMin+=Math.min(dd,cc);
+              const dd=demand[t]||0,cc=coverageReal[t]||0; demMin+=dd; covMin+=Math.min(dd,cc);
               // Desglose: la limpieza tiene prioridad sobre la rampa en cada slot.
               const dl=demandLimp[t]||0;
               if(dl>0){limpDemMin+=dl; limpGapMin+=dl-Math.min(cc,dl);}
@@ -1876,7 +1896,11 @@
       addNewStaff(){this.editingStaff={id:'new',name:'',role:'Operativo',active:true,disableReason:''};},
       editStaff(e){this.editingStaff=JSON.parse(JSON.stringify(e));},
       saveStaff(){
-        if(this.editingStaff.id==='new'){this.editingStaff.id='EMP-NEW-'+Date.now();this.staff.unshift(this.editingStaff);}
+        // ⚠️ Al FINAL, nunca al principio. Los descansos se reparten por la POSICIÓN de cada
+        // quien en la lista (computeRestDays, modo 'fijo'), así que meter a alguien adelante
+        // corría a todos los demás: medido, 74 de 100 personas cambiaban sus días de descanso
+        // al contratar a UNA. Agregando al final, nadie se mueve.
+        if(this.editingStaff.id==='new'){this.editingStaff.id='EMP-NEW-'+Date.now();this.staff.push(this.editingStaff);}
         else{const i=this.staff.findIndex(s=>s.id===this.editingStaff.id);if(i>-1)this.staff[i]=this.editingStaff;}
         this.editingStaff=null;
         this.persistStaff();
@@ -2554,6 +2578,29 @@
                 <input type="number" x-model.number="algorithmRules.ecofoxPorTurno" class="input-field">
                 <div class="text-[10px] text-tertiary">Cuántos tienen que estar presentes al mismo tiempo, sin parar, desde que llega el primer avión hasta que sale el último. Es un puesto aparte: solo lo cubre la gente marcada como Ecofox en Personal.</div>
               </div>
+            </div>
+            <div>
+              <label class="text-xs font-600 text-secondary block mb-1.5">Descanso entre el turno de un día y el del siguiente (horas)</label>
+              <div class="grid grid-cols-2 gap-3">
+                <div>
+                  <label class="text-[10px] text-tertiary uppercase block mb-1">Deseado</label>
+                  <input type="number" step="0.5" min="0" x-model.number="algorithmRules.descansoDeseadoH" class="input-field">
+                </div>
+                <div>
+                  <label class="text-[10px] text-tertiary uppercase block mb-1">Mínimo, nunca menos</label>
+                  <input type="number" step="0.5" min="0" x-model.number="algorithmRules.descansoMinimoH" class="input-field">
+                </div>
+              </div>
+              <p class="text-[10px] text-tertiary mt-1.5">
+                El <b>deseado</b> es la meta: si la operación no da, cede. El <b>mínimo</b> no se cruza nunca: cuando
+                nadie puede tomar un turno respetándolo, ese turno queda sin cubrir y pasa a horas extra.
+                <span x-show="(algorithmRules.descansoMinimoH||0)>(algorithmRules.descansoDeseadoH||0)" class="block mt-1 font-semibold" style="color:#B45309">
+                  El mínimo está por encima del deseado, así que manda el mínimo.
+                </span>
+                <span x-show="(algorithmRules.descansoMinimoH||0)>=8" class="block mt-1 font-semibold" style="color:#B45309">
+                  Ojo: con 8 h o más quedan turnos que nadie puede tomar. Conviene generar y ver cuántas horas extra suma.
+                </span>
+              </p>
             </div>
             <p class="text-xs text-tertiary">Los turnos son de 10 horas: seguidas, o partidas en dos con 3 horas libres en medio. Esto no se puede cambiar.</p>
           </div>

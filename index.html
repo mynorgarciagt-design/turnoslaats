@@ -321,6 +321,9 @@
         minutosAntesVuelo:15, maxHorasDiarias:10,
         minHorasBloque:2, minDescansoPartido:180,
         minutosComida:45, umbralComida:300, umbralAgrupar:180,
+        // Puestos que trabajan SIEMPRE de corrido (nunca turno partido). Vacío = como siempre.
+        // La persona lo arrastra aunque ese día vaya de apoyo a rampa.
+        corridoPorPuesto:{operativo:false, encargado:false, operador:false, ecofox:false},
       },
       // Time
       nowTime:'00:00', nowDate:'',
@@ -499,6 +502,8 @@
         if(a.ecofoxPorTurno==null)a.ecofoxPorTurno=3;
         if(a.descansoDeseadoH==null)a.descansoDeseadoH=8;   // reglas guardadas antes de que existieran
         if(a.descansoMinimoH==null)a.descansoMinimoH=6;
+        if(!a.corridoPorPuesto)a.corridoPorPuesto={};                       // reglas guardadas antes de que existiera
+        ['operativo','encargado','operador','ecofox'].forEach(p=>{ if(a.corridoPorPuesto[p]==null)a.corridoPorPuesto[p]=false; });
       },
       async loadReglas(){
         try{
@@ -968,7 +973,7 @@
         // (instantes donde sube o baja), no en una grilla fija :00/:30. Así el turno se engancha
         // exacto a cuando entra o sale la necesidad del vuelo y no quedan huecos de borde.
         // Corridos de 10h. Partidos: 2 bloques (gap>=3h, span<=SPAN_MAX, total=10h).
-        const buildCandidates=(demand)=>{
+        const buildCandidates=(demand,permitirPartidos=true)=>{
           const times=Object.keys(demand).map(Number).sort((a,b)=>a-b);
           if(!times.length)return[];
           const lo=times[0],hi=times[times.length-1];
@@ -987,6 +992,7 @@
           // Partidos: los 4 puntos (inicio/fin de cada bloque) en bordes; cada bloque >=2h,
           // gap >=3h, span <=SPAN_MAX, total de 10h hasta el tope (12h + tolerancia). El exceso
           // sobre las 10h queda como horas extra, igual que en los corridos.
+          if(permitirPartidos){
           const SPLIT_MAX=720; // tope partido: 12h justas
           for(const s1 of edges){
             for(const e1 of edges){
@@ -1002,6 +1008,7 @@
               }
             }
           }
+          }
           return cands;
         };
  
@@ -1015,8 +1022,8 @@
         // Reglas de turnos (10h, redondez, partidos válidos) las garantiza buildCandidates;
         // este algoritmo solo decide QUÉ candidato recibe cada empleado.
         const GRASP_RESTARTS=24;
-        const assignMixed=(demand,maxWorkers,seed)=>{
-          const cands=buildCandidates(demand);
+        const assignMixed=(demand,maxWorkers,seed,permitirPartidos=true)=>{
+          const cands=buildCandidates(demand,permitirPartidos);
           if(!cands.length||maxWorkers<=0)return {workers:[],coverage:{}};
           const candSlots=cands.map(bl=>{const a=[];for(const seg of bl)for(let t=seg[0];t<seg[1];t+=STEP)a.push(t);return a;});
           const nC=candSlots.length;
@@ -1176,6 +1183,12 @@
         // rampa). Sin esta cuenta el turno de apoyo caía siempre sobre los mismos: en agosto real,
         // uno hacía 22 días de rampa y cinco compañeros ninguno.
         const diasApoyo={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>diasApoyo[e.id]=0);
+        // ── PUESTOS QUE VAN SIEMPRE DE CORRIDO ──
+        // Es de la PERSONA, no del puesto donde trabaje ese día: un encargado marcado "de corrido"
+        // sigue de corrido el día que va de apoyo a rampa.
+        const CORRIDO=(this.algorithmRules||{}).corridoPorPuesto||{};
+        const POOL_DE_ROL={'Operativo':'operativo','Encargado':'encargado','Operador':'operador','Ecofox':'ecofox'};
+        const exigeCorrido=(emp)=>!!CORRIDO[POOL_DE_ROL[emp.role]];
         // ── REPARTO PAREJO DE LO INCÓMODO ──
         // Los DÍAS ya se reparten por diasTrabajados. Esto reparte QUÉ TURNO le toca a cada
         // quien, para que la noche no le caiga siempre a los mismos. NO cambia qué turnos se
@@ -1232,7 +1245,11 @@
             for(const t in demand){const ex=demand[t]-availableAll.length;if(ex>0){structMin+=ex;if(ex>picoStruct[pool])picoStruct[pool]=ex;}}
 
             const poolSeed=[...pool].reduce((h,c)=>(h*31+c.charCodeAt(0))|0,day);
-            const {workers,coverage}=assignMixed(demand,availableAll.length,poolSeed);
+            // Si TODOS los que pueden trabajar acá van de corrido, ni se arman turnos partidos.
+            // Si solo algunos (un encargado prestado a rampa), se arman los dos tipos y más
+            // abajo se les acomoda un turno de corrido a los que lo necesitan.
+            const todosCorridos=availableAll.length>0&&availableAll.every(e=>exigeCorrido(e));
+            const {workers,coverage}=assignMixed(demand,availableAll.length,poolSeed,!todosCorridos);
 
             // Quién trabaja hoy en ESTE puesto: los que menos días llevan.
             // En el puesto que cede gente a otro (encargados → rampa), quien más días lleva de
@@ -1316,6 +1333,57 @@
                   turnoDe[A]=wB; turnoDe[B]=wA; mejoro=true;
                 }
                 if(!mejoro)break;
+              }
+            }
+
+            // ── TURNO DE CORRIDO PARA QUIEN LO EXIGE (obligatorio) ──
+            // Pasa cuando alguien marcado "de corrido" va de apoyo a un puesto donde SÍ se parten
+            // los turnos (un encargado prestado a rampa). Se intenta en este orden:
+            //   1) cambiárselo por el turno corrido de un compañero que sí puede partirlo;
+            //   2) armarle uno de corrido A SU MEDIDA con las formas que el optimizador descartó
+            //      (elige la que más hueco tapa), y el partido que suelta se lo queda alguien que
+            //      hoy descansaba;
+            //   3) si ni así, ese día NO trabaja — jamás se le deja un turno partido.
+            // Va al final para no poder romper ningún descanso: todo pasa por `pisoDuro`.
+            {
+              const porId={}; sorted.forEach(e=>{porId[e.id]=e;});
+              const pendientes=Object.keys(turnoDe).filter(id=>{
+                const emp=porId[id],wi=turnoDe[id];
+                return emp&&exigeCorrido(emp)&&wi!==undefined&&workers[wi].length>1;
+              });
+              if(pendientes.length){
+                const cob={};   // cobertura viva, para elegir el turno a medida que más falta hace
+                const poner=(bl)=>{bl.forEach(seg=>{for(let t=seg[0];t<seg[1];t+=STEP)cob[t]=(cob[t]||0)+1;});};
+                const quitar=(bl)=>{bl.forEach(seg=>{for(let t=seg[0];t<seg[1];t+=STEP)cob[t]=(cob[t]||0)-1;});};
+                Object.values(turnoDe).forEach(wi=>{if(workers[wi])poner(workers[wi]);});
+                const corridos=buildCandidates(demand,false);   // solo formas sin partir
+                for(const id of pendientes){
+                  const wi=turnoDe[id]; if(wi===undefined||workers[wi].length<=1)continue;
+                  // 1) intercambio con un compañero que sí puede partirlo
+                  let listo=false;
+                  for(const otro of sorted){
+                    const wj=turnoDe[otro.id];
+                    if(otro.id===id||wj===undefined||workers[wj].length>1||exigeCorrido(otro))continue;
+                    if(pisoDuro[id]>inicioDe(workers[wj])||pisoDuro[otro.id]>inicioDe(workers[wi]))continue;
+                    turnoDe[id]=wj; turnoDe[otro.id]=wi; listo=true; break;
+                  }
+                  if(listo)continue;
+                  // 2) turno de corrido a su medida
+                  quitar(workers[wi]); delete turnoDe[id];
+                  for(const libre of sorted){        // el partido que soltó no se pierde
+                    if(turnoDe[libre.id]!==undefined||exigeCorrido(libre)||libre.id===id)continue;
+                    if(pisoDuro[libre.id]>inicioDe(workers[wi]))continue;
+                    turnoDe[libre.id]=wi; poner(workers[wi]); break;
+                  }
+                  let mejor=null,mv=-1;
+                  for(const bl of corridos){
+                    if(pisoDuro[id]>bl[0][0])continue;
+                    let v=0; for(const seg of bl)for(let t=seg[0];t<seg[1];t+=STEP)if((demand[t]||0)>(cob[t]||0))v++;
+                    if(v>mv){mv=v;mejor=bl;}
+                  }
+                  // 3) si no hay ninguna forma de corrido que le respete el descanso, no trabaja
+                  if(mejor){workers.push(mejor); turnoDe[id]=workers.length-1; poner(mejor);}
+                }
               }
             }
 
@@ -2710,7 +2778,26 @@
                 </span>
               </p>
             </div>
-            <p class="text-xs text-tertiary">Los turnos son de 10 horas: seguidas, o partidas en dos con 3 horas libres en medio. Esto no se puede cambiar.</p>
+            <div>
+              <label class="text-xs font-600 text-secondary block mb-1.5">Puestos que trabajan siempre de corrido</label>
+              <div class="grid grid-cols-2 gap-2">
+                <template x-for="p in [{k:'operativo',n:'Agentes de rampa'},{k:'encargado',n:'Crewchiefs'},{k:'operador',n:'Operadores'},{k:'ecofox',n:'Ecofox'}]" :key="p.k">
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input type="checkbox" x-model="algorithmRules.corridoPorPuesto[p.k]" class="w-4 h-4">
+                    <span x-text="p.n"></span>
+                  </label>
+                </template>
+              </div>
+              <p class="text-[10px] text-tertiary mt-1.5">
+                Sin marcar, el turno puede venir partido en dos con 3 horas libres en medio. Marcado, ese puesto
+                trabaja las 10 horas seguidas. La marca la lleva la persona: un Crewchief marcado sigue de corrido
+                los días que va de apoyo a rampa.
+                <span x-show="Object.values(algorithmRules.corridoPorPuesto||{}).some(v=>v)" class="block mt-1 font-semibold" style="color:#B45309">
+                  Los turnos partidos existen para cubrir el pico de la mañana y el de la noche con una sola
+                  persona. Quitarlos deja más horas sin cubrir: conviene generar y comparar el número antes de guardar.
+                </span>
+              </p>
+            </div>
           </div>
         </div>
         <div class="card p-6">

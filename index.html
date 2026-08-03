@@ -1172,6 +1172,10 @@
         const restDays={};
         [[rampas,'operativo'],[encargados,'encargado'],[operadores,'operador'],[ecofox,'ecofox']].forEach(([emps,pl])=>{const r=computeRestDays(emps,pl);for(const id in r)restDays[id]=r[id];});
         const diasTrabajados={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>diasTrabajados[e.id]=0);
+        // Días que a cada quien le tocó trabajar FUERA de su puesto (encargado que va de apoyo a
+        // rampa). Sin esta cuenta el turno de apoyo caía siempre sobre los mismos: en agosto real,
+        // uno hacía 22 días de rampa y cinco compañeros ninguno.
+        const diasApoyo={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>diasApoyo[e.id]=0);
         // ── REPARTO PAREJO DE LO INCÓMODO ──
         // Los DÍAS ya se reparten por diasTrabajados. Esto reparte QUÉ TURNO le toca a cada
         // quien, para que la noche no le caiga siempre a los mismos. NO cambia qué turnos se
@@ -1230,7 +1234,12 @@
             const poolSeed=[...pool].reduce((h,c)=>(h*31+c.charCodeAt(0))|0,day);
             const {workers,coverage}=assignMixed(demand,availableAll.length,poolSeed);
 
-            const sorted=[...availableAll].sort((a,b)=>diasTrabajados[a.id]-diasTrabajados[b.id]);
+            // Quién trabaja hoy en ESTE puesto: los que menos días llevan.
+            // En el puesto que cede gente a otro (encargados → rampa), quien más días lleva de
+            // apoyo pasa adelante: así le toca quedarse en lo suyo y el apoyo va rotando.
+            const sorted=[...availableAll].sort((a,b)=>
+              (devolverSobrantes?(diasApoyo[b.id]||0)-(diasApoyo[a.id]||0):0)
+              ||diasTrabajados[a.id]-diasTrabajados[b.id]);
 
             // ── Descanso entre el turno de ANOCHE y el de HOY ──
             // Dos límites por persona:
@@ -1324,6 +1333,7 @@
                 // según la operación real (vuelos atrasados, huecos, etc.).
                 const meal=(!isSplit&&totalMin>=300)?'Define encargado':'-';
                 const esApoyo=(pool==='operativo'&&emp.role!=='Operativo');
+                if(esApoyo)diasApoyo[emp.id]++;   // para que el apoyo rote y no caiga siempre en los mismos
                 const tag=(isSplit?' (partido)':'')+(esApoyo?' (apoyo rampa)':'');
                 this.currentRoster[emp.id][day]={isDescanso:false,blocks:blockStr+tag,meal};
                 diasTrabajados[emp.id]++;

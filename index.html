@@ -1136,7 +1136,28 @@
           const rest={}; employees.forEach(e=>rest[e.id]=new Set());
           if(!APLICAR_DESCANSOS)return rest;
           if(DESCANSO_MODO==='fijo'){
-            for(let d=1;d<=DIAS;d++){const w=wd(d);employees.forEach((emp,idx)=>{if(w===(2*idx)%7||w===(2*idx+1)%7)rest[emp.id].add(d);});}
+            // ── EL DESCANSO ROTA ──
+            // Antes el lugar en la lista decidía PARA SIEMPRE qué dos días de la semana descansaba
+            // cada quien. Como no cambiaba nunca, 4 de cada 7 personas no libraban jamás un sábado
+            // ni un domingo (54 de 91 en el agosto real de Mynor) y 1 de cada 7 los libraba todos.
+            // Ahora se le corren los días una semana tras otra, así el fin de semana rota entre todos.
+            // ⚠️ La cuenta de semanas NO se reinicia cada mes, a propósito: reiniciándola el mes se
+            //    ve parejo pero al mirar el AÑO la injusticia vuelve (4 a 48 findes libres por
+            //    persona, contra 28 a 32 con la cuenta continua).
+            // ⚠️ El 3 no es arbitrario: mueve el descanso UN día por semana, que es lo que mantiene
+            //    la racha en 5 días seguidos. Se midieron los 6 pasos posibles y los otros la subían
+            //    a 6, 7, 8, 9 o 10 días seguidos sin librar.
+            {
+              const LUNES0=Date.UTC(2024,0,1);   // 1-ene-2024 cayó lunes: origen de la cuenta de semanas
+              for(let d=1;d<=DIAS;d++){
+                const w=wd(d);
+                const sem=Math.floor((Date.UTC(this.selectedYear,this.selectedMonth-1,d)-LUNES0)/604800000);
+                employees.forEach((emp,idx)=>{
+                  const b=(((idx+3*sem)%7)+7)%7;
+                  if(w===(2*b)%7||w===(2*b+1)%7)rest[emp.id].add(d);
+                });
+              }
+            }
             return rest;
           }
           // peso por día = máx personas necesarias a la vez (incluye limpieza en operativos)
@@ -1183,6 +1204,10 @@
         // rampa). Sin esta cuenta el turno de apoyo caía siempre sobre los mismos: en agosto real,
         // uno hacía 22 días de rampa y cinco compañeros ninguno.
         const diasApoyo={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>diasApoyo[e.id]=0);
+        // Minutos que cada quien lleva de TURNO ALARGADO (lo que pasa de las 10 h). Sin esta cuenta
+        // se repartían solos: en el agosto real iban de 15 a 220 min por persona en rampa, y 11
+        // personas no se quedaban ni un minuto de más en todo el mes.
+        const extMin={}; [...rampas,...encargados,...operadores,...ecofox].forEach(e=>extMin[e.id]=0);
         // ── PUESTOS QUE VAN SIEMPRE DE CORRIDO ──
         // Es de la PERSONA, no del puesto donde trabaje ese día: un encargado marcado "de corrido"
         // sigue de corrido el día que va de apoyo a rampa.
@@ -1387,6 +1412,35 @@
               }
             }
 
+            // ── REPARTIR PAREJO LOS TURNOS ALARGADOS ──
+            // El motor alarga algunos turnos para no abandonar un vuelo a medias, pero nunca miraba
+            // A QUIÉN le tocaba quedarse. Acá se intercambian turnos para emparejar esos minutos.
+            // ⚠️ SOLO entre turnos del MISMO tipo (misma noche/madrugada/partido): así el reparto de
+            //    lo incómodo que se hizo arriba NO se mueve ni un poco, y tampoco se rompe la regla
+            //    de "turnos de corrido" (mismo p = los dos partidos o los dos corridos).
+            // Va al final, después de todo lo demás, para no poder romper un descanso.
+            {
+              const extraDe=(wi)=>Math.max(0,workers[wi].reduce((a,s)=>a+(s[1]-s[0]),0)-SHIFT);
+              const ids=Object.keys(turnoDe);
+              for(let vuelta=0;vuelta<6;vuelta++){
+                let mejoro=false;
+                for(let x=0;x<ids.length;x++)for(let y=x+1;y<ids.length;y++){
+                  const A=ids[x], B=ids[y], wA=turnoDe[A], wB=turnoDe[B];
+                  if(wA===undefined||wB===undefined||wA===wB)continue;
+                  const eA=extraDe(wA), eB=extraDe(wB);
+                  if(eA===eB)continue;
+                  const tA=tipoDe(workers[wA]), tB=tipoDe(workers[wB]);
+                  if(tA.n!==tB.n||tA.m!==tB.m||tA.p!==tB.p)continue;   // distinto tipo: no se toca
+                  const antes=Math.abs((extMin[A]+eA)-(extMin[B]+eB));
+                  const despues=Math.abs((extMin[A]+eB)-(extMin[B]+eA));
+                  if(despues>=antes)continue;
+                  if(pisoDuro[A]>inicioDe(workers[wB])||pisoDuro[B]>inicioDe(workers[wA]))continue;
+                  turnoDe[A]=wB; turnoDe[B]=wA; mejoro=true;
+                }
+                if(!mejoro)break;
+              }
+            }
+
             const sobrantes=[];
             sorted.forEach((emp)=>{
               if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
@@ -1402,6 +1456,7 @@
                 const meal=(!isSplit&&totalMin>=300)?'Define encargado':'-';
                 const esApoyo=(pool==='operativo'&&emp.role!=='Operativo');
                 if(esApoyo)diasApoyo[emp.id]++;   // para que el apoyo rote y no caiga siempre en los mismos
+                extMin[emp.id]+=Math.max(0,totalMin-SHIFT);   // minutos de turno alargado, para emparejarlos
                 const tag=(isSplit?' (partido)':'')+(esApoyo?' (apoyo rampa)':'');
                 this.currentRoster[emp.id][day]={isDescanso:false,blocks:blockStr+tag,meal};
                 diasTrabajados[emp.id]++;
@@ -1459,11 +1514,24 @@
               // Comparación LINEAL en el eje del día (los tramos que cruzan medianoche ya vienen
               // con fin >1440). NO usar _ovlExtra acá: ese "da la vuelta al reloj" y hacía que una
               // ventana de 23:30-00:05 (noche) le cayera a quien trabajó 00:00-06:00 (madrugada).
-              const present=onDuty.filter(o=>o.segs.some(([s,e])=>win.start<e&&s<win.end));
-              present.sort((a,b)=>(cmin[a.emp.id]||0)-(cmin[b.emp.id]||0)); // el que menos limpió, primero
-              present.slice(0,EQUIPO_LIMPIEZA).forEach(o=>{cmin[o.emp.id]=(cmin[o.emp.id]||0)+(win.end-win.start);(cwins[o.emp.id]=cwins[o.emp.id]||[]).push(win);});
+              // Qué pedazo de la ventana cae DE VERDAD dentro del turno de cada quien.
+              // Antes se elegía a quien SOLAPA la ventana y se le anotaba entera: el roster le
+              // decía "🧹 15:20-15:50" a alguien cuyo bloque arrancaba 15:45.
+              const dentro=(o)=>{
+                let mejor=null;
+                for(const [s,e] of o.segs){
+                  const a=Math.max(win.start,s), b=Math.min(win.end,e);
+                  if(b>a&&(!mejor||b-a>mejor[1]-mejor[0]))mejor=[a,b];
+                }
+                return mejor;
+              };
+              const present=onDuty.map(o=>({o,tr:dentro(o)})).filter(x=>x.tr);
+              // Primero quien cubre la ventana COMPLETA; entre iguales, quien menos ha limpiado.
+              const completa=(x)=>(x.tr[0]<=win.start&&x.tr[1]>=win.end)?0:1;
+              present.sort((a,b)=>completa(a)-completa(b)||(cmin[a.o.emp.id]||0)-(cmin[b.o.emp.id]||0));
+              present.slice(0,EQUIPO_LIMPIEZA).forEach(x=>{cmin[x.o.emp.id]=(cmin[x.o.emp.id]||0)+(x.tr[1]-x.tr[0]);(cwins[x.o.emp.id]=cwins[x.o.emp.id]||[]).push(x.tr);});
             });
-            for(const id in cwins){const stl=this.currentRoster[id][day];if(stl)stl.limpieza=cwins[id].map(w=>toHHMM(w.start)+'-'+toHHMM(w.end)).join(', ');}
+            for(const id in cwins){const stl=this.currentRoster[id][day];if(stl)stl.limpieza=cwins[id].map(w=>toHHMM(w[0])+'-'+toHHMM(w[1])).join(', ');}
           }
           this.staff.filter(s=>s.role==='Supervisor').forEach(emp=>{
             if(!this.currentRoster[emp.id])this.currentRoster[emp.id]={};
@@ -2313,7 +2381,9 @@
     };
   }
   </script>
-  <script src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <!-- `defer`: sin él Alpine arranca antes de que exista el <body>, se queja en la consola y
+       tiene que reintentar al terminar de cargar la página. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
 </head>
  
 <body x-data="appState()" x-cloak>

@@ -324,6 +324,10 @@
         // Puestos que trabajan SIEMPRE de corrido (nunca turno partido). Vacío = como siempre.
         // La persona lo arrastra aunque ese día vaya de apoyo a rampa.
         corridoPorPuesto:{operativo:false, encargado:false, operador:false, ecofox:false},
+        // Tipos de vuelo que llevan RECEPTORES. En LAATS solo TURN y DESPACHO (confirmado por
+        // Mynor, 2026-08-31). Pedirlos también en RECEPCIÓN hacía que el motor reclamara 4
+        // personas 2 h antes de cada recepción que nadie necesita: 348 h de más en septiembre.
+        receptoresPorTipo:{TURN:true, DESPACHO:true, RECEPCION:false},
       },
       // Time
       nowTime:'00:00', nowDate:'',
@@ -504,6 +508,8 @@
         if(a.descansoMinimoH==null)a.descansoMinimoH=6;
         if(!a.corridoPorPuesto)a.corridoPorPuesto={};                       // reglas guardadas antes de que existiera
         ['operativo','encargado','operador','ecofox'].forEach(p=>{ if(a.corridoPorPuesto[p]==null)a.corridoPorPuesto[p]=false; });
+        if(!a.receptoresPorTipo)a.receptoresPorTipo={};                     // reglas guardadas antes de que existiera
+        [['TURN',true],['DESPACHO',true],['RECEPCION',false]].forEach(([k,v])=>{ if(a.receptoresPorTipo[k]==null)a.receptoresPorTipo[k]=v; });
       },
       async loadReglas(){
         try{
@@ -906,13 +912,16 @@
           if(pool==='ecofox')return computeEcofox(day);
           const AR=this.algorithmRules||{}, RULES=this.airlineRules||{};
           const numOr=(v,def)=>(typeof v==='number'&&!isNaN(v))?v:def;
+          // Qué tipos de vuelo llevan receptores. El default va acá también, para que valga aunque
+          // el mes venga de antes de que existiera la regla.
+          const RT=Object.assign({TURN:true,DESPACHO:true,RECEPCION:false},AR.receptoresPorTipo||{});
           const d={};
           this.flights.filter(f=>f.active&&f.days.includes(day)).forEach(f=>{
             const eta=norm5(toM(f.eta));let etd=norm5(toM(f.etd));
             if(etd<=eta)etd+=1440;
             if(pool==='operativo'){
               const ar=RULES[f.airline]||{};
-              const nE=numOr(ar.receptores, f.airline==='AA'?4:2);                                  // receptores por aerolínea
+              const nE=(RT[f.type]!==false)?numOr(ar.receptores, f.airline==='AA'?4:2):0;                                  // receptores por aerolínea
               const nB=numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type], {DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7)); // base: override por aerolínea → global → default
               const oR=numOr(AR.minAntesReceptores,120), oB=numOr(AR.minAntesBase,15);
               // Desde las 00:00 de SU día. El tramo anterior a medianoche (vuelo de madrugada) lo
@@ -938,7 +947,7 @@
               };
               if(pool==='operativo'){
                 const ar=RULES[f.airline]||{};
-                const nE=numOr(ar.receptores, f.airline==='AA'?4:2);
+                const nE=(RT[f.type]!==false)?numOr(ar.receptores, f.airline==='AA'?4:2):0;
                 const nB=numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type], {DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7));
                 preMedianoche(numOr(AR.minAntesReceptores,120), nE);
                 preMedianoche(numOr(AR.minAntesBase,15), nB);
@@ -1597,7 +1606,8 @@
             const eta=norm5(toM(f.eta)), ar=RULES[f.airline]||{};
             const anota=(lead,n,rol)=>{ const ini=eta-lead; if(ini>=0||!(n>0))return;
               const k=toHHMM(1440+ini)+'|'+rol; previos[k]=(previos[k]||0)+n; };
-            anota(numOr(AR.minAntesReceptores,120), numOr(ar.receptores,f.airline==='AA'?4:2), 'rampa');
+            const RT1=Object.assign({TURN:true,DESPACHO:true,RECEPCION:false},AR.receptoresPorTipo||{});
+            anota(numOr(AR.minAntesReceptores,120), (RT1[f.type]!==false)?numOr(ar.receptores,f.airline==='AA'?4:2):0, 'rampa');
             anota(numOr(AR.minAntesBase,15), numOr((ar.basePorTipo||{})[f.type], numOr((AR.basePorTipo||{})[f.type],{DESPACHO:7,TURN:10,RECEPCION:8}[f.type]||7)), 'rampa');
             const rEnc=this.reglaEncOper('encargado',f.airline), rOpr=this.reglaEncOper('operador',f.airline);
             anota(rEnc.lead, rEnc.cnt, 'encargado');
@@ -1748,7 +1758,12 @@
         // la gente empieza a hacer falta con el que llega primero.
         const leadDe=(f)=>{
           if(esEco)return 0;   // Ecofox está de corrido mientras hay aviones en tierra
-          if(rol==='Operativo')return Math.max(numOr(AR.minAntesReceptores,120),numOr(AR.minAntesBase,15));
+          // Sin receptores, la rampa de ese vuelo empieza a hacer falta solo con la base.
+          if(rol==='Operativo'){
+            const RT=Object.assign({TURN:true,DESPACHO:true,RECEPCION:false},AR.receptoresPorTipo||{});
+            const oB=numOr(AR.minAntesBase,15);
+            return (RT[f.type]!==false)?Math.max(numOr(AR.minAntesReceptores,120),oB):oB;
+          }
           if(rol==='Encargado'||rol==='Encargado de Vuelo')return this.reglaEncOper('encargado',f.airline).lead;
           if(rol==='Operador')return this.reglaEncOper('operador',f.airline).lead;
           return 0;
@@ -2845,6 +2860,25 @@
                 </span>
                 <span x-show="(algorithmRules.descansoMinimoH||0)>=8" class="block mt-1 font-semibold" style="color:#B45309">
                   Ojo: con 8 h o más quedan turnos que nadie puede tomar. Conviene generar y ver cuántas horas extra suma.
+                </span>
+              </p>
+            </div>
+            <div>
+              <label class="text-xs font-600 text-secondary block mb-1.5">Tipos de vuelo que llevan receptores</label>
+              <div class="grid grid-cols-3 gap-2">
+                <template x-for="t in [{k:'TURN',n:'Turn'},{k:'DESPACHO',n:'Despacho'},{k:'RECEPCION',n:'Recepción'}]" :key="t.k">
+                  <label class="flex items-center gap-2 text-xs cursor-pointer">
+                    <input type="checkbox" x-model="algorithmRules.receptoresPorTipo[t.k]" class="w-4 h-4">
+                    <span x-text="t.n"></span>
+                  </label>
+                </template>
+              </div>
+              <p class="text-[10px] text-tertiary mt-1.5">
+                Los receptores se piden desde <span x-text="algorithmRules.minAntesReceptores"></span> minutos antes de
+                cada vuelo del tipo marcado. Es la regla que más mueve el número de horas sin cubrir: marcar un tipo de
+                más pide gente durante horas que nadie necesita.
+                <span x-show="!Object.values(algorithmRules.receptoresPorTipo||{}).some(v=>v)" class="block mt-1 font-semibold" style="color:#B45309">
+                  Sin ningún tipo marcado no se pide ningún receptor en todo el mes.
                 </span>
               </p>
             </div>

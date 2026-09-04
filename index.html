@@ -2254,6 +2254,38 @@
         }
         return r;
       },
+      // ── REVISIÓN DEL ITINERARIO ──
+      // Los errores más caros de todo el proyecto no vinieron del motor sino del Excel: un vuelo con
+      // las columnas de llegada y salida invertidas pidió 10 personas durante 22 h todos los días
+      // (≈5,900 h de déficit fantasma), y una aerolínea escrita distinto se creó sin configurar.
+      // Nada de esto truena: el horario sale, con números malos. Por eso se avisa a la vista.
+      get avisosVuelos(){
+        const av=[], act=(this.flights||[]).filter(f=>f.active);
+        if(!act.length)return av;
+        const DIAS=new Date(this.selectedYear,this.selectedMonth,0).getDate();
+        const hh=(t)=>/^\d{1,2}:\d{2}$/.test(String(t==null?'':t).trim());
+        act.forEach(f=>{
+          const et=`${f.airline} ${f.type} ${f.eta}-${f.etd}`, ds=f.days||[];
+          if(!hh(f.eta)||!hh(f.etd)){ av.push(`${f.airline} ${f.type}: la hora de llegada o de salida no se entiende ("${f.eta}" / "${f.etd}").`); return; }
+          let dur=this.toMins(f.etd)-this.toMins(f.eta); if(dur<=0)dur+=1440;
+          if(dur>300) av.push(`${et}: ${(dur/60).toFixed(1)} h en tierra. Suele pasar cuando las columnas de llegada y salida vienen al revés.`);
+          if(this.toMins(f.etd)===0) av.push(`${et}: la hora de salida es 00:00, que casi siempre es una celda vacía en el Excel.`);
+          const fuera=ds.filter(d=>d<1||d>DIAS);
+          if(fuera.length) av.push(`${et}: tiene días que no existen en este mes (${fuera.slice(0,6).join(', ')}).`);
+          if(!ds.length) av.push(`${et}: no tiene ningún día asignado, así que nadie lo va a cubrir.`);
+        });
+        // Aerolíneas sin su propia configuración: usan los valores generales sin avisar.
+        const num=(x)=>typeof x==='number'&&!isNaN(x);
+        const registradas=Object.keys(this.airlineRules||{});
+        [...new Set(act.map(f=>f.airline))].forEach(a=>{
+          const r=(this.airlineRules||{})[a]||{}, b=r.basePorTipo||{};
+          if([b.TURN,b.RECEPCION,b.DESPACHO].some(num))return;
+          const par=registradas.filter(o=>o!==a&&(o.startsWith(a)||a.startsWith(o)));
+          av.push(`${a}: no tiene configurado cuánta gente lleva por vuelo, así que usa los valores generales.`
+            +(par.length?` Ojo, se parece a ${par.join(' y ')}: puede ser la misma aerolínea escrita de dos formas.`:''));
+        });
+        return av;
+      },
       getFilteredStaff(){
         if(!this.staffFilter)return this.staff;
         const q=this.staffFilter.toLowerCase();
@@ -2748,6 +2780,22 @@
         </div>
       </div>
       <div x-show="csvStatus" class="alert-success text-sm" x-text="csvStatus"></div>
+      <template x-if="avisosVuelos.length">
+        <div class="card p-4" style="border-left:4px solid #B45309">
+          <div class="text-sm font-600 mb-2" style="color:#B45309">
+            ⚠️ Conviene revisar antes de generar — <span x-text="avisosVuelos.length"></span> cosa(s) raras en el itinerario
+          </div>
+          <ul class="space-y-1">
+            <template x-for="a in avisosVuelos" :key="a">
+              <li class="text-xs text-secondary" x-text="'· '+a"></li>
+            </template>
+          </ul>
+          <p class="text-[10px] text-tertiary mt-2">
+            No impide generar. Son las fallas de itinerario que más horas sin cubrir provocan, y no dan
+            ningún error: el horario sale igual, con números equivocados.
+          </p>
+        </div>
+      </template>
       <div class="card overflow-hidden">
         <div class="overflow-x-auto">
           <table class="w-full text-sm">

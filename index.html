@@ -1325,6 +1325,7 @@
             // Corregir choques. Se intenta primero con el descanso completo; si no hay con quién,
             // se repite exigiendo solo el límite físico. Si ni así, la persona NO trabaja ese turno
             // (jamás se deja un turno imposible).
+            const perdieronTurno=new Set();   // a quién le quitamos el turno por el descanso mínimo
             const reacomodar=(tope)=>{
               sorted.forEach(emp=>{
                 const wi=turnoDe[emp.id];
@@ -1342,11 +1343,40 @@
                     turnoDe[libre.id]=wi; delete turnoDe[emp.id]; return;
                   }
                 }
-                if(tope===pisoDuro)delete turnoDe[emp.id];   // 3) imposible respetando el mínimo: ese turno queda sin cubrir
+                if(tope===pisoDuro){perdieronTurno.add(emp.id); delete turnoDe[emp.id];}   // 3) imposible respetando el mínimo: ese turno queda sin cubrir
               });
             };
             reacomodar(libreDesde);   // primero con el descanso deseado
             reacomodar(pisoDuro);     // si no se puede, con el mínimo; ahí ya no se cede más
+
+            // ── RESCATAR A QUIEN QUEDÓ SIN TURNO ──
+            // `reacomodar` le quita el turno a quien no puede tomarlo sin romper su descanso mínimo,
+            // y ahí la pérdida es DOBLE: el turno queda sin cubrir Y la persona no trabaja, aunque
+            // estaba disponible. En el septiembre real fueron 7 personas, y 5 de ellas el día 12,
+            // que era justamente el día con MÁS déficit del mes.
+            // Acá se les arma otro turno a medida con las formas que el optimizador descartó, si de
+            // verdad tapa un hueco y respeta su descanso. Solo a los que PERDIERON turno, no a los
+            // que sobran por diseño (esos no trabajan porque ya no hace falta más gente).
+            if(perdieronTurno.size){
+              const cob={};
+              const poner=(bl)=>{bl.forEach(seg=>{for(let t=seg[0];t<seg[1];t+=STEP)cob[t]=(cob[t]||0)+1;});};
+              Object.values(turnoDe).forEach(wi=>{if(workers[wi])poner(workers[wi]);});
+              let libres=null, corridos=null;   // se arman solo si hace falta
+              for(const emp of sorted){
+                if(!perdieronTurno.has(emp.id)||turnoDe[emp.id]!==undefined)continue;
+                const soloCorrido=exigeCorrido(emp);
+                if(soloCorrido){ if(!corridos)corridos=buildCandidates(demand,false); }
+                else { if(!libres)libres=buildCandidates(demand,true); }
+                const cands=soloCorrido?corridos:libres;
+                let mejor=null,mv=0;              // mv=0: si no tapa nada, no vale la pena
+                for(const bl of cands){
+                  if(pisoDuro[emp.id]>bl[0][0])continue;
+                  let v=0; for(const seg of bl)for(let t=seg[0];t<seg[1];t+=STEP)if((demand[t]||0)>(cob[t]||0))v++;
+                  if(v>mv){mv=v;mejor=bl;}
+                }
+                if(mejor){ workers.push(mejor); turnoDe[emp.id]=workers.length-1; poner(mejor); }
+              }
+            }
 
             // ── EMPAREJAR LA CARGA ──
             // Reacomodar resuelve choques de descanso sin mirar la equidad, así que deshace parte

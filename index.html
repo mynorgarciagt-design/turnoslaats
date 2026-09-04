@@ -1240,7 +1240,7 @@
           PESO.n*Math.abs((carga[a].n+ta.n)-(carga[b].n+tb.n))
          +PESO.m*Math.abs((carga[a].m+ta.m)-(carga[b].m+tb.m))
          +PESO.p*Math.abs((carga[a].p+ta.p)-(carga[b].p+tb.p));
-        const allDeficits=[]; let demMin=0,covMin=0,gapMin=0,structMin=0,limpDemMin=0,limpGapMin=0;
+        const allDeficits=[]; let demMin=0,covMin=0,gapMin=0,structMin=0,limpDemMin=0,limpGapMin=0,idleMin=0;
         const picoStruct={operativo:0,encargado:0,operador:0,ecofox:0}; // máx personas que faltan disponibles en un mismo instante, por pool
         const poolMeta={operativo:{rol:'Operativo',label:'Operativos'},encargado:{rol:'Encargado de Vuelo',label:'Encargados'},operador:{rol:'Operador',label:'Operadores'},ecofox:{rol:'Ecofox',label:'Ecofox'}};
 
@@ -1316,11 +1316,20 @@
             // QUÉ turno le toca: el más incómodo va a quien menos incomodidad ha cargado.
             const turnoDe={};
             const trabajanHoy=sorted.slice(0,workers.length);
-            const ordenTurnos=workers.map((w,i)=>({i,pw:pesoDe(tipoDe(w))}))
-              .sort((x,y)=>y.pw-x.pw||x.i-y.i);
+            // Entre turnos IGUAL de incómodos, primero el que más se alarga; y entre personas
+            // IGUAL de cargadas, primero la que menos tiempo lleva quedándose de más. Así el turno
+            // largo cae en quien menos lo ha hecho.
+            // ⚠️ Va como DESEMPATE (después de `pw` y de `deuda`), pero eso NO garantiza que el
+            //    reparto de noches/madrugadas/partidos quede intacto: dos turnos con el MISMO `pw`
+            //    pueden tener distinto (n,m,p) — por ejemplo madrugada+partido y noche valen 3 los
+            //    dos. Medido en septiembre real: los rangos se mueven poco y en las dos direcciones
+            //    (crewchief 3–5 → 4–5, rampa 6–11 → 6–12). Si se toca esto, VOLVER A MEDIRLO.
+            const largoDe=(w)=>Math.max(0,w.reduce((a,s)=>a+(s[1]-s[0]),0)-SHIFT);
+            const ordenTurnos=workers.map((w,i)=>({i,pw:pesoDe(tipoDe(w)),ex:largoDe(w)}))
+              .sort((x,y)=>y.pw-x.pw||y.ex-x.ex||x.i-y.i);
             const deuda=(id)=>carga[id].n*PESO.n+carga[id].m*PESO.m+carga[id].p*PESO.p;
             const ordenGente=trabajanHoy.slice()
-              .sort((x,y)=>deuda(x.id)-deuda(y.id)||diasTrabajados[x.id]-diasTrabajados[y.id]);
+              .sort((x,y)=>deuda(x.id)-deuda(y.id)||extMin[x.id]-extMin[y.id]||diasTrabajados[x.id]-diasTrabajados[y.id]);
             ordenTurnos.forEach((t,k)=>{ if(ordenGente[k])turnoDe[ordenGente[k].id]=t.i; });
             // Corregir choques. Se intenta primero con el descanso completo; si no hay con quién,
             // se repite exigiendo solo el límite físico. Si ni así, la persona NO trabaja ese turno
@@ -1513,6 +1522,11 @@
             Object.values(turnoDe).forEach(wi=>{
               (workers[wi]||[]).forEach(seg=>{ for(let t=seg[0];t<seg[1];t+=STEP)coverageReal[t]=(coverageReal[t]||0)+1; });
             });
+            // ── OCIOSIDAD: gente presente por encima de lo que hace falta ──
+            // Se recorre la UNIÓN de demanda y cobertura: hay ratos con gente presente y demanda
+            // cero que no aparecen en `demand` y se perderían.
+            { const ts=new Set([...Object.keys(demand),...Object.keys(coverageReal)]);
+              ts.forEach(k=>{ const t=+k; idleMin+=Math.max(0,(coverageReal[t]||0)-(demand[t]||0)); }); }
             const meta=poolMeta[pool]; let blk=null;
             Object.keys(demand).map(Number).sort((a,b)=>a-b).forEach(t=>{
               const dd=demand[t]||0,cc=coverageReal[t]||0; demMin+=dd; covMin+=Math.min(dd,cc);
@@ -1618,7 +1632,7 @@
         const limpHoras=Math.round(limpGapMin*STEP/60);
         const limpPct=limpDemMin===0?100:Math.round(100*(limpDemMin-limpGapMin)/limpDemMin);
         const personalPico=picoStruct.operativo+picoStruct.encargado+picoStruct.operador+picoStruct.ecofox;
-        this.coverageMetrics={percent:pct,deficientHours:gapHoras,hoursIdle:0,limpiezaPct:limpPct,limpiezaDeficit:limpHoras,estructuralHoras:structHoras,personalPico,personalPicoOp:picoStruct.operativo,personalPicoEnc:picoStruct.encargado,personalPicoOpr:picoStruct.operador,personalPicoEco:picoStruct.ecofox};
+        this.coverageMetrics={percent:pct,deficientHours:gapHoras,hoursIdle:Math.round(idleMin*STEP/60),limpiezaPct:limpPct,limpiezaDeficit:limpHoras,estructuralHoras:structHoras,personalPico,personalPicoOp:picoStruct.operativo,personalPicoEnc:picoStruct.encargado,personalPicoOpr:picoStruct.operador,personalPicoEco:picoStruct.ecofox};
         if(this.overtimeAlerts.length>0){
           // Mensaje SIMPLE en Generar turnos: solo cobertura + horas extra totales. El detalle (estructural, limpieza, personal) vive en el panel de Horas Extras.
           this.smartAlerts=[{type:'warning',message:`Se cubre el ${pct}% de ${this.monthName}. Para llegar al 100% harían falta unas ${gapHoras} horas extra. El detalle está en la pestaña Horas Extras.`}];
